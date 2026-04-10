@@ -108,3 +108,11 @@ print("\nStep 7: Result!")
 print(f"  Total length: {len(result.text_content)} chars")
 print(f"  Preview (first 300 chars):\n")
 print(result.text_content[:300])
+
+# Save result to txt file in the same directory as input file
+print("\nStep 8: Saving result...")
+pdf_path_obj = Path(pdf_path)
+output_path = pdf_path_obj.parent / f"{pdf_path_obj.stem}.txt"
+output_path.write_text(result.text_content, encoding="utf-8")
+print(f"  Saved to: {output_path}")
+print(f"  File size: {output_path.stat().st_size / 1024:.1f} KB")
