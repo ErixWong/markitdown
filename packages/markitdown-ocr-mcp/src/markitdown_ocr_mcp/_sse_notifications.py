@@ -1,0 +1,201 @@
+"""
+SSE Notification Service: Real-time task notifications via Server-Sent Events.
+
+Provides:
+- Task progress notifications
+- Task completion notifications
+- Client subscription management
+"""
+
+import asyncio
+import json
+from typing import Optional
+from collections.abc import AsyncIterator
+
+
+class SSENotificationService:
+    """
+    SSE notification service for real-time task updates.
+    
+    Manages client subscriptions and broadcasts task events.
+    """
+    
+    def __init__(self):
+        self._subscribers: dict[str, list[asyncio.Queue]] = {}
+        self._all_subscribers: list[asyncio.Queue] = []
+    
+    def subscribe(self, task_id: Optional[str] = None) -> asyncio.Queue:
+        """
+        Subscribe to task notifications.
+        
+        Args:
+            task_id: Optional task ID to subscribe to specific task.
+                     If None, subscribes to all task notifications.
+        
+        Returns:
+            asyncio.Queue to receive notifications
+        """
+        queue = asyncio.Queue()
+        
+        if task_id:
+            if task_id not in self._subscribers:
+                self._subscribers[task_id] = []
+            self._subscribers[task_id].append(queue)
+        else:
+            self._all_subscribers.append(queue)
+        
+        return queue
+    
+    def unsubscribe(self, queue: asyncio.Queue, task_id: Optional[str] = None):
+        """
+        Unsubscribe from notifications.
+        
+        Args:
+            queue: Queue to unsubscribe
+            task_id: Optional task ID if subscribed to specific task
+        """
+        if task_id and task_id in self._subscribers:
+            try:
+                self._subscribers[task_id].remove(queue)
+                if not self._subscribers[task_id]:
+                    del self._subscribers[task_id]
+            except ValueError:
+                pass
+        else:
+            try:
+                self._all_subscribers.remove(queue)
+            except ValueError:
+                pass
+    
+    async def notify_progress(self, task_id: str, progress: int, message: str):
+        """
+        Send progress notification.
+        
+        Args:
+            task_id: Task ID
+            progress: Progress percentage (0-100)
+            message: Progress message
+        """
+        event_data = {
+            "event": "task_progress",
+            "data": {
+                "task_id": task_id,
+                "progress": progress,
+                "message": message,
+            }
+        }
+        await self._broadcast(event_data, task_id)
+    
+    async def notify_completed(self, task_id: str):
+        """
+        Send completion notification.
+        
+        Args:
+            task_id: Task ID
+        """
+        event_data = {
+            "event": "task_completed",
+            "data": {
+                "task_id": task_id,
+                "status": "completed",
+                "progress": 100,
+            }
+        }
+        await self._broadcast(event_data, task_id)
+    
+    async def notify_failed(self, task_id: str, error: str):
+        """
+        Send failure notification.
+        
+        Args:
+            task_id: Task ID
+            error: Error message
+        """
+        event_data = {
+            "event": "task_failed",
+            "data": {
+                "task_id": task_id,
+                "status": "failed",
+                "error": error,
+            }
+        }
+        await self._broadcast(event_data, task_id)
+    
+    async def notify_cancelled(self, task_id: str):
+        """
+        Send cancellation notification.
+        
+        Args:
+            task_id: Task ID
+        """
+        event_data = {
+            "event": "task_cancelled",
+            "data": {
+                "task_id": task_id,
+                "status": "cancelled",
+            }
+        }
+        await self._broadcast(event_data, task_id)
+    
+    async def _broadcast(self, event_data: dict, task_id: str):
+        """
+        Broadcast event to subscribers.
+        
+        Args:
+            event_data: Event data dictionary
+            task_id: Task ID for targeted subscribers
+        """
+        # Send to task-specific subscribers
+        if task_id in self._subscribers:
+            for queue in self._subscribers[task_id]:
+                try:
+                    await queue.put(event_data)
+                except asyncio.QueueFull:
+                    pass
+        
+        # Send to all-task subscribers
+        for queue in self._all_subscribers:
+            try:
+                await queue.put(event_data)
+            except asyncio.QueueFull:
+                pass
+    
+    async def event_stream(self, task_id: Optional[str] = None) -> AsyncIterator[str]:
+        """
+        Generate SSE event stream.
+        
+        Args:
+            task_id: Optional task ID to filter events
+        
+        Yields:
+            SSE formatted strings
+        """
+        queue = self.subscribe(task_id)
+        
+        try:
+            while True:
+                event_data = await queue.get()
+                
+                # Format as SSE
+                event = event_data.get("event", "message")
+                data = json.dumps(event_data.get("data", {}))
+                
+                yield f"event: {event}\n"
+                yield f"data: {data}\n\n"
+                
+                # Stop streaming after completion/failure/cancellation
+                if event in ("task_completed", "task_failed", "task_cancelled"):
+                    break
+        finally:
+            self.unsubscribe(queue, task_id)
+
+
+# Global notification service instance
+_notification_service: Optional[SSENotificationService] = None
+
+
+def get_notification_service() -> SSENotificationService:
+    """Get or create global notification service."""
+    if _notification_service is None:
+        _notification_service = SSENotificationService()
+    return _notification_service
