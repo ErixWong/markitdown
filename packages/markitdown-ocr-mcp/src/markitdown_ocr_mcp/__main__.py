@@ -15,6 +15,20 @@ import sys
 from collections.abc import AsyncIterator
 from typing import Optional
 
+# Load .env file if it exists
+try:
+    from dotenv import load_dotenv
+    # Try to load .env from package directory
+    env_path = os.path.join(os.path.dirname(__file__), "..", "..", ".env")
+    if os.path.exists(env_path):
+        load_dotenv(env_path)
+        print(f"Loaded .env from: {env_path}")
+    else:
+        # Also try current working directory
+        load_dotenv()
+except ImportError:
+    print("Warning: python-dotenv not installed, .env file will not be loaded")
+
 from mcp.server.fastmcp import FastMCP
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
@@ -87,27 +101,21 @@ def get_task_processor() -> TaskProcessor:
         def progress_callback(task_id: str, progress: int, message: str):
             """Callback to send SSE notifications on progress.
             
-            Uses asyncio.ensure_future which is safe to call from 
-            synchronous context when event loop is running.
+            Since process_task runs in the event loop, we can directly
+            schedule the async notification.
             """
             try:
-                loop = asyncio.get_running_loop()
-                loop.call_soon_threadsafe(
-                    lambda: asyncio.ensure_future(
-                        notification_service.notify_progress(task_id, progress, message)
-                    )
+                # Schedule notification in the event loop
+                asyncio.ensure_future(
+                    notification_service.notify_progress(task_id, progress, message)
                 )
                 if progress == 100:
-                    loop.call_soon_threadsafe(
-                        lambda: asyncio.ensure_future(
-                            notification_service.notify_completed(task_id)
-                        )
+                    asyncio.ensure_future(
+                        notification_service.notify_completed(task_id)
                     )
                 elif progress < 0:
-                    loop.call_soon_threadsafe(
-                        lambda: asyncio.ensure_future(
-                            notification_service.notify_failed(task_id, message)
-                        )
+                    asyncio.ensure_future(
+                        notification_service.notify_failed(task_id, message)
                     )
             except RuntimeError:
                 # No running event loop, skip notification
@@ -141,6 +149,7 @@ async def submit_conversion_task(
         file_path: Local file path on server (for large files, bypasses HTTP size limit)
         options: Optional configuration:
             - enable_ocr: Whether to enable OCR (default: false)
+            - page_range: Page range for PDF processing (e.g., "1-5", "1,3,5-10", "" for all pages)
             - ocr_prompt: Custom OCR prompt
             - ocr_model: OCR model name
     
@@ -150,6 +159,10 @@ async def submit_conversion_task(
     Note:
         For files larger than 4MB, use file_path parameter instead of content.
         The file_path should be a valid path on the server's filesystem.
+        
+        When enable_ocr is true for PDF files, the document is processed page-by-page
+        with real-time progress updates via SSE. Use page_range to process only
+        specific pages (useful for large documents or testing).
     """
     task_store = get_task_store()
     
@@ -169,12 +182,15 @@ async def submit_conversion_task(
         if not filename:
             filename = os.path.basename(file_path)
         
-        task_id = task_store.create_task(
-            task_store.generate_task_id(),
+        # Generate task_id first, then create task
+        generated_task_id = task_store.generate_task_id()
+        task_store.create_task(
+            generated_task_id,
             file_content,
             filename,
             options
         )
+        task_id = generated_task_id
     else:
         # Handle Base64 content mode (for small files)
         if not content:
@@ -402,13 +418,13 @@ def main():
     parser.add_argument(
         "--host",
         default=None,
-        help="Host to bind to (default: 127.0.0.1)",
+        help="Host to bind to (default: from MARKITDOWN_MCP_HOST env or 127.0.0.1)",
     )
     parser.add_argument(
         "--port",
         type=int,
         default=None,
-        help="Port to listen on (default: 3001)",
+        help="Port to listen on (default: from MARKITDOWN_MCP_PORT env or 3001)",
     )
     parser.add_argument(
         "--storage",
@@ -431,7 +447,8 @@ def main():
         sys.exit(1)
     
     if use_http:
-        host = args.host if args.host else "127.0.0.1"
+        # Read host from args or env or default
+        host = args.host if args.host else os.getenv("MARKITDOWN_MCP_HOST", "127.0.0.1")
         
         if args.host and args.host not in ("127.0.0.1", "localhost"):
             print(
@@ -444,7 +461,8 @@ def main():
             )
         
         starlette_app = create_starlette_app(mcp_server, debug=True)
-        port = args.port if args.port else 3001
+        # Read port from args or env or default
+        port = args.port if args.port else int(os.getenv("MARKITDOWN_MCP_PORT", "3001"))
         # Use uvicorn Config to set larger request body size (100MB)
         config = uvicorn.Config(
             starlette_app,
