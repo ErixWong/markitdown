@@ -8,6 +8,7 @@ An enhanced MCP (Model Context Protocol) server for MarkItDown with:
 - **Async Task Management** - Submit tasks, track progress, get results
 - **OCR Support** - Extract text from images in PDF, DOCX, PPTX, XLSX
 - **SSE Notifications** - Real-time progress updates via Server-Sent Events
+- **Silent Mode** - Option to suppress progress notifications for LLM agents
 - **Docker Deployment** - Easy deployment with Docker
 
 ## Comparison with Official MCP
@@ -19,6 +20,7 @@ An enhanced MCP (Model Context Protocol) server for MarkItDown with:
 | OCR | ❌ | ✅ |
 | Progress Tracking | ❌ | ✅ |
 | SSE Notifications | ❌ | ✅ |
+| Silent Mode | ❌ | ✅ |
 | Task Storage | ❌ | ✅ (SQLite) |
 | Best For | Small files, quick conversion | Large files, OCR, batch processing |
 
@@ -69,16 +71,28 @@ Submit a file for conversion:
 
 ```json
 {
-  "content": "base64_encoded_file_content",
-  "filename": "document.pdf",
+  "file_path": "/path/to/document.pdf",
   "options": {
     "enable_ocr": true,
-    "ocr_model": "gpt-4o"
+    "ocr_model": "gpt-4o",
+    "page_range": "1-10",
+    "silent": false
   }
 }
 ```
 
+**Options:**
+
+| Option | Type | Description | Default |
+|--------|------|-------------|---------|
+| `enable_ocr` | boolean | Enable OCR for image extraction | `false` |
+| `ocr_model` | string | OCR model name (e.g., `gpt-4o`, `glm-ocr`) | From env |
+| `page_range` | string | Page range to process (e.g., `1-5`, `1,3,5`) | All pages |
+| `silent` | boolean | Suppress SSE progress notifications | `false` |
+
 Returns: `task_id`
+
+**Note:** Use `silent: true` when you don't want progress notifications (e.g., when an LLM agent is processing and shouldn't be interrupted by progress updates).
 
 #### `get_task_status`
 
@@ -149,11 +163,120 @@ Subscribe to real-time task updates:
 GET /tasks/events?task_id=task_abc123
 ```
 
-Event types:
-- `task_progress` - Progress updates
-- `task_completed` - Task finished successfully
-- `task_failed` - Task failed with error
-- `task_cancelled` - Task was cancelled
+### Event Types
+
+| Event | Description |
+|-------|-------------|
+| `task_progress` | Progress updates during processing |
+| `task_completed` | Task finished successfully |
+| `task_failed` | Task failed with error |
+| `task_cancelled` | Task was cancelled |
+
+### Unified Message Format
+
+All SSE events follow a **unified structure** with consistent fields:
+
+```json
+{
+  "task_id": "task_abc123",
+  "status": "processing",
+  "progress": 45,
+  "message": "Processing page 3/10"
+}
+```
+
+**Field Descriptions:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `task_id` | string | Unique task identifier |
+| `status` | string | Task status: `pending`, `processing`, `completed`, `failed`, `cancelled` |
+| `progress` | integer | Progress percentage (0-100), or -1 for failed/cancelled |
+| `message` | string | Human-readable status message |
+
+### Event-Specific Values
+
+**task_progress:**
+```json
+{
+  "task_id": "task_abc123",
+  "status": "processing",
+  "progress": 45,
+  "message": "Processing page 3/10"
+}
+```
+
+**task_completed:**
+```json
+{
+  "task_id": "task_abc123",
+  "status": "completed",
+  "progress": 100,
+  "message": "Conversion completed"
+}
+```
+
+**task_failed:**
+```json
+{
+  "task_id": "task_abc123",
+  "status": "failed",
+  "progress": -1,
+  "message": "Error: OCR service unavailable"
+}
+```
+
+**task_cancelled:**
+```json
+{
+  "task_id": "task_abc123",
+  "status": "cancelled",
+  "progress": -1,
+  "message": "Task cancelled"
+}
+```
+
+### SSE Client Example (Python)
+
+```python
+import httpx
+import json
+
+def listen_sse(task_id: str):
+    url = f"http://127.0.0.1:3000/tasks/events?task_id={task_id}"
+    
+    with httpx.stream("GET", url, timeout=None) as response:
+        for line in response.iter_lines():
+            if line.startswith("event:"):
+                event_type = line[6:].strip()
+            elif line.startswith("data:"):
+                data = json.loads(line[5:].strip())
+                # All events have unified structure
+                status = data.get("status")
+                progress = data.get("progress")
+                message = data.get("message")
+                print(f"[{event_type}] {status}: {progress}% - {message}")
+```
+
+## Silent Mode
+
+When submitting a task with `silent: true`, the server will:
+- **NOT** send SSE progress notifications
+- Still process the task normally
+- Still update task status in the database
+- Still send completion/failure notifications (but without progress updates)
+
+**Use Case:** When an LLM agent submits a conversion task and shouldn't receive intermediate progress updates that could interrupt its thought process.
+
+```json
+{
+  "file_path": "/path/to/document.pdf",
+  "options": {
+    "enable_ocr": true,
+    "silent": true
+  }
+}
+```
 
 ## Environment Variables
 
@@ -164,7 +287,11 @@ Event types:
 | `MARKITDOWN_OCR_API_KEY` | API key for LLM OCR | - |
 | `MARKITDOWN_OCR_API_BASE` | API base URL | `https://api.openai.com/v1` |
 | `MARKITDOWN_OCR_MODEL` | OCR model name | `gpt-4o` |
-| `MARKITDOWN_MAX_IMAGE_DIMENSION` | Max image size for OCR | `1500` |
+| `MARKITDOWN_OCR_TIMEOUT` | OCR API timeout in seconds | `120` |
+| `MARKITDOWN_MAX_CONCURRENT` | Maximum concurrent tasks | `3` |
+| `MARKITDOWN_MAX_FILE_SIZE_MB` | Maximum file size in MB | `100` |
+| `MARKITDOWN_MCP_HOST` | HTTP server host | `127.0.0.1` |
+| `MARKITDOWN_MCP_PORT` | HTTP server port | `3001` |
 
 ## Docker
 

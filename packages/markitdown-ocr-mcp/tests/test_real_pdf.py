@@ -24,12 +24,11 @@ sse_running = True
 task_completed = False
 task_failed = False
 last_event_time = None
-final_result = None
 
 
 def listen_sse(task_id: str):
     """Listen to SSE events for a task in a background thread."""
-    global sse_events, sse_running, task_completed, task_failed, last_event_time, final_result
+    global sse_events, sse_running, task_completed, task_failed, last_event_time
     url = f"{SSE_URL}?task_id={task_id}"
     
     try:
@@ -45,19 +44,20 @@ def listen_sse(task_id: str):
                     sse_events.append({"event": event_type, "data": data})
                     last_event_time = time.time()
                     
-                    # Handle different event types
+                    # Handle different event types (unified structure)
+                    # All events have: task_id, status, progress, message
+                    status = data.get("status", "")
+                    progress = data.get("progress", 0)
+                    message = data.get("message", "")
+                    
                     if event_type == "task_progress":
-                        progress = data.get("progress", 0)
-                        message = data.get("message", "")
                         print(f"  [SSE] Progress: {progress}% - {message}")
                     elif event_type == "task_completed":
                         task_completed = True
-                        final_result = data.get("result", "")
-                        print(f"  [SSE] Task completed! Result length: {len(final_result):,} chars")
+                        print(f"  [SSE] Task completed! Fetching result via API...")
                     elif event_type == "task_failed":
                         task_failed = True
-                        error = data.get("error", "Unknown error")
-                        print(f"  [SSE] Task failed: {error}")
+                        print(f"  [SSE] Task failed: {message}")
                 elif line.startswith(":"):
                     # Heartbeat - update last_event_time
                     last_event_time = time.time()
@@ -109,7 +109,7 @@ def call_mcp_tool(tool_name: str, arguments: dict) -> dict:
 
 
 def main():
-    global sse_running, task_completed, task_failed, last_event_time, final_result
+    global sse_running, task_completed, task_failed, last_event_time
     
     print("=" * 60)
     print("MCP PDF Conversion Test (using file_path)")
@@ -123,7 +123,7 @@ def main():
     
     # Optional: process only specific pages (useful for testing)
     # Set to "" to process all pages, or "1-3" to process first 3 pages
-    PAGE_RANGE = "1-3"  # Process only first 3 pages for faster testing
+    PAGE_RANGE = ""  # Process all pages (set to "1-3" for faster testing)
     
     try:
         result = call_mcp_tool("submit_conversion_task", {
@@ -180,19 +180,15 @@ def main():
         sse_running = False
         return
     
-    # Step 3: Get the result (from SSE or API)
-    print("\n[Step 3] Getting conversion result...")
-    markdown_content = final_result
-    
-    if not markdown_content:
-        # Fallback: get result via API
-        try:
-            result = call_mcp_tool("get_task_result", {"task_id": task_id})
-            markdown_content = result.get("result", "") or result.get("raw", "")
-        except Exception as e:
-            print(f"  ERROR getting result: {e}")
-            sse_running = False
-            return
+    # Step 3: Get the result via API
+    print("\n[Step 3] Getting conversion result via API...")
+    try:
+        result = call_mcp_tool("get_task_result", {"task_id": task_id})
+        markdown_content = result.get("raw", "")
+    except Exception as e:
+        print(f"  ERROR getting result: {e}")
+        sse_running = False
+        return
     
     if not markdown_content or markdown_content.startswith("Error"):
         print(f"  ERROR: No result available")

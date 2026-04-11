@@ -97,32 +97,33 @@ def get_task_processor() -> TaskProcessor:
     global _task_processor
     if _task_processor is None:
         notification_service = get_notification_service()
+        task_store = get_task_store()
         
-        def progress_callback(task_id: str, progress: int, message: str):
-            """Callback to send SSE notifications on progress.
+        async def progress_callback(task_id: str, progress: int, message: str):
+            """Async callback to send SSE notifications on progress.
             
-            Since process_task runs in the event loop, we can directly
-            schedule the async notification.
+            This is called from async context in process_task, so we can
+            directly await the notification methods.
+            
+            Supports silent mode: if task options have silent=true,
+            only completion/failure notifications are sent.
             """
-            try:
-                # Schedule notification in the event loop
-                asyncio.ensure_future(
-                    notification_service.notify_progress(task_id, progress, message)
-                )
-                if progress == 100:
-                    asyncio.ensure_future(
-                        notification_service.notify_completed(task_id)
-                    )
-                elif progress < 0:
-                    asyncio.ensure_future(
-                        notification_service.notify_failed(task_id, message)
-                    )
-            except RuntimeError:
-                # No running event loop, skip notification
-                pass
+            # Check if silent mode is enabled for this task
+            task = task_store.get_task(task_id)
+            silent = task.options.get("silent", False) if task else False
+            
+            if not silent:
+                # Send progress notification
+                await notification_service.notify_progress(task_id, progress, message)
+            
+            # Always send completion/failure notifications
+            if progress == 100:
+                await notification_service.notify_completed(task_id)
+            elif progress < 0:
+                await notification_service.notify_failed(task_id, message)
         
         _task_processor = TaskProcessor(
-            task_store=get_task_store(),
+            task_store=task_store,
             enable_ocr=os.getenv("MARKITDOWN_OCR_ENABLED", "false").lower() == "true",
             progress_callback=progress_callback,
         )
@@ -150,6 +151,7 @@ async def submit_conversion_task(
         options: Optional configuration:
             - enable_ocr: Whether to enable OCR (default: false)
             - page_range: Page range for PDF processing (e.g., "1-5", "1,3,5-10", "" for all pages)
+            - silent: Silent mode - only notify on completion/failure, no progress updates (default: false)
             - ocr_prompt: Custom OCR prompt
             - ocr_model: OCR model name
     
@@ -163,6 +165,9 @@ async def submit_conversion_task(
         When enable_ocr is true for PDF files, the document is processed page-by-page
         with real-time progress updates via SSE. Use page_range to process only
         specific pages (useful for large documents or testing).
+        
+        Set silent=true to avoid progress notifications - useful when LLM doesn't want
+        to be disturbed by progress updates. Only completion/failure events will be sent.
     """
     task_store = get_task_store()
     

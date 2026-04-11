@@ -89,10 +89,12 @@ class SSENotificationService:
         """
         logger.debug(f"SSE progress: task={task_id} progress={progress}% msg={message}")
         
+        # Unified event structure: all events have task_id, status, progress, message
         event_data = {
             "event": "task_progress",
             "data": {
                 "task_id": task_id,
+                "status": "processing",
                 "progress": progress,
                 "message": message,
             }
@@ -108,12 +110,14 @@ class SSENotificationService:
         """
         logger.info(f"SSE notification: task {task_id} completed")
         
+        # Unified event structure
         event_data = {
             "event": "task_completed",
             "data": {
                 "task_id": task_id,
                 "status": "completed",
                 "progress": 100,
+                "message": "Conversion completed",
             }
         }
         await self._broadcast(event_data, task_id)
@@ -128,12 +132,14 @@ class SSENotificationService:
         """
         logger.error(f"SSE notification: task {task_id} failed - {error}")
         
+        # Unified event structure
         event_data = {
             "event": "task_failed",
             "data": {
                 "task_id": task_id,
                 "status": "failed",
-                "error": error,
+                "progress": -1,
+                "message": error,
             }
         }
         await self._broadcast(event_data, task_id)
@@ -147,11 +153,14 @@ class SSENotificationService:
         """
         logger.info(f"SSE notification: task {task_id} cancelled")
         
+        # Unified event structure
         event_data = {
             "event": "task_cancelled",
             "data": {
                 "task_id": task_id,
                 "status": "cancelled",
+                "progress": -1,
+                "message": "Task cancelled",
             }
         }
         await self._broadcast(event_data, task_id)

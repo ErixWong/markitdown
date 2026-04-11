@@ -7,9 +7,6 @@ Supports page-by-page processing for PDF files with real-time progress.
 
 import asyncio
 import io
-import re
-import os
-import tempfile
 import logging
 import time
 from typing import Callable, Optional, Awaitable, List
@@ -158,7 +155,6 @@ class TaskProcessor:
         self.enable_ocr = enable_ocr
         self.progress_callback = progress_callback
         self._processing_tasks: dict[str, asyncio.Task] = {}
-        self._event_loop: Optional[asyncio.AbstractEventLoop] = None
     
     async def _report_progress(self, task_id: str, progress: int, message: str):
         """
@@ -187,9 +183,6 @@ class TaskProcessor:
             task_id: Task ID to process
         """
         start_time = time.time()
-        
-        # Store the current event loop for thread-safe callbacks
-        self._event_loop = asyncio.get_running_loop()
         
         task = self.task_store.get_task(task_id)
         if not task:
