@@ -54,20 +54,20 @@ flowchart TD
     B4 --> A2
     A2 --> A3
     A3 --> E1 & E2 & E3 & E4
-    
+  
     D1 --> D2
     D2 --> D3
     D3 --> D4
     D4 --> D5
     D5 --> D6
     D6 --> C5
-    
+  
     D2 -.->|进度更新| C4
     C4 -.->|回调| E1
     C5 -.->|回调| E2
     D2 -.->|错误| C6
     C6 -.->|回调| E3
-    
+  
     A3 -->|完成后| A4
     A4 --> C5
 ```
@@ -76,47 +76,47 @@ flowchart TD
 
 ### 步骤 1：提交任务
 
-| 操作 | 组件 | 说明 |
-|------|------|------|
-| 调用工具 | MCP Client | `submit_conversion_task(content, filename, options)` |
-| 接收请求 | `__main__.py` | MCP 工具装饰器处理 |
-| 生成 ID | `_task_store.py` | `generate_task_id()` 生成 `task_lz1m2x3y4z5a6b7c8d9` |
-| 解码内容 | `_task_store.py` | `base64.b64decode(content)` |
-| 保存文件 | `_task_store.py` | 写入 `storage/2026/04/10/task_xxx_source.pdf` |
-| 创建记录 | `_task_store.py` | SQLite INSERT，状态 `pending` |
-| 启动处理 | `_task_processor.py` | `asyncio.create_task(process_task())` |
-| 返回 ID | `__main__.py` | 返回 `task_id` 给客户端 |
+| 操作     | 组件                   | 说明                                                     |
+| -------- | ---------------------- | -------------------------------------------------------- |
+| 调用工具 | MCP Client             | `submit_conversion_task(content, filename, options)`   |
+| 接收请求 | `__main__.py`        | MCP 工具装饰器处理                                       |
+| 生成 ID  | `_task_store.py`     | `generate_task_id()` 生成 `task_lz1m2x3y4z5a6b7c8d9` |
+| 解码内容 | `_task_store.py`     | `base64.b64decode(content)`                            |
+| 保存文件 | `_task_store.py`     | 写入 `storage/2026/04/10/task_xxx_source.pdf`          |
+| 创建记录 | `_task_store.py`     | SQLite INSERT，状态 `pending`                          |
+| 启动处理 | `_task_processor.py` | `asyncio.create_task(process_task())`                  |
+| 返回 ID  | `__main__.py`        | 返回 `task_id` 给客户端                                |
 
 ### 步骤 2：异步处理
 
-| 操作 | 组件 | 说明 |
-|------|------|------|
-| 更新状态 | `_task_processor.py` | `update_progress(task_id, 0, "Starting...")` → `processing` |
-| 读取文件 | `_task_processor.py` | `open(task.source_path, 'rb')` |
-| 创建实例 | `_task_processor.py` | `MarkItDown(enable_plugins=enable_ocr)` |
-| 执行转换 | `_task_processor.py` | `mid.convert_stream(file_stream, stream_info)` |
-| OCR 处理 | `markitdown-ocr` | 如果 `enable_ocr=True`，调用 LLM Vision |
-| 保存结果 | `_task_store.py` | `complete_task(task_id, result.markdown)` |
-| 发送通知 | `_sse_notifications.py` | `notify_completed(task_id)` |
+| 操作     | 组件                      | 说明                                                             |
+| -------- | ------------------------- | ---------------------------------------------------------------- |
+| 更新状态 | `_task_processor.py`    | `update_progress(task_id, 0, "Starting...")` → `processing` |
+| 读取文件 | `_task_processor.py`    | `open(task.source_path, 'rb')`                                 |
+| 创建实例 | `_task_processor.py`    | `MarkItDown(enable_plugins=enable_ocr)`                        |
+| 执行转换 | `_task_processor.py`    | `mid.convert_stream(file_stream, stream_info)`                 |
+| OCR 处理 | `markitdown-ocr`        | 如果 `enable_ocr=True`，调用 LLM Vision                        |
+| 保存结果 | `_task_store.py`        | `complete_task(task_id, result.markdown)`                      |
+| 发送通知 | `_sse_notifications.py` | `notify_completed(task_id)`                                    |
 
 ### 步骤 3：获取结果
 
-| 操作 | 组件 | 说明 |
-|------|------|------|
-| 查询状态 | MCP Client | `get_task_status(task_id)` |
-| 获取结果 | MCP Client | `get_task_result(task_id)` |
+| 操作     | 组件               | 说明                             |
+| -------- | ------------------ | -------------------------------- |
+| 查询状态 | MCP Client         | `get_task_status(task_id)`     |
+| 获取结果 | MCP Client         | `get_task_result(task_id)`     |
 | 返回内容 | `_task_store.py` | 读取 `task_xxx_result.md` 文件 |
 
 ## 3. SSE 通知消息格式
 
 ### 3.1 事件类型列表
 
-| 事件类型 | 触发时机 | 必需字段 |
-|----------|----------|----------|
-| `task_progress` | 进度更新 | `task_id`, `progress`, `message` |
-| `task_completed` | 任务完成 | `task_id`, `status`, `progress` |
-| `task_failed` | 任务失败 | `task_id`, `status`, `error` |
-| `task_cancelled` | 任务取消 | `task_id`, `status` |
+| 事件类型           | 触发时机 | 必需字段                               |
+| ------------------ | -------- | -------------------------------------- |
+| `task_progress`  | 进度更新 | `task_id`, `progress`, `message` |
+| `task_completed` | 任务完成 | `task_id`, `status`, `progress`  |
+| `task_failed`    | 任务失败 | `task_id`, `status`, `error`     |
+| `task_cancelled` | 任务取消 | `task_id`, `status`                |
 
 ### 3.2 消息格式详解
 
@@ -134,6 +134,7 @@ flowchart TD
 ```
 
 **SSE 格式：**
+
 ```
 event: task_progress
 data: {"task_id":"task_lz1m2x3y4z5a6b7c8d9","progress":45,"message":"OCR processing page 5/10"}
@@ -153,6 +154,7 @@ data: {"task_id":"task_lz1m2x3y4z5a6b7c8d9","progress":45,"message":"OCR process
 ```
 
 **SSE 格式：**
+
 ```
 event: task_completed
 data: {"task_id":"task_lz1m2x3y4z5a6b7c8d9","status":"completed","progress":100}
@@ -172,6 +174,7 @@ data: {"task_id":"task_lz1m2x3y4z5a6b7c8d9","status":"completed","progress":100}
 ```
 
 **SSE 格式：**
+
 ```
 event: task_failed
 data: {"task_id":"task_lz1m2x3y4z5a6b7c8d9","status":"failed","error":"OCR API timeout after 30 seconds"}
@@ -190,6 +193,7 @@ data: {"task_id":"task_lz1m2x3y4z5a6b7c8d9","status":"failed","error":"OCR API t
 ```
 
 **SSE 格式：**
+
 ```
 event: task_cancelled
 data: {"task_id":"task_lz1m2x3y4z5a6b7c8d9","status":"cancelled"}
@@ -198,16 +202,19 @@ data: {"task_id":"task_lz1m2x3y4z5a6b7c8d9","status":"cancelled"}
 ### 3.3 SSE 订阅方式
 
 **订阅特定任务：**
+
 ```
 GET /tasks/events?task_id=task_lz1m2x3y4z5a6b7c8d9
 ```
 
 **订阅所有任务：**
+
 ```
 GET /tasks/events
 ```
 
 **客户端示例（JavaScript）：**
+
 ```javascript
 const eventSource = new EventSource('/tasks/events?task_id=task_xxx');
 
@@ -246,13 +253,13 @@ stateDiagram-v2
 
 ### 状态说明
 
-| 状态 | 说明 | 可转换到 |
-|------|------|----------|
-| `pending` | 任务已创建，等待处理 | `processing`, `cancelled` |
-| `processing` | 正在转换中 | `completed`, `failed`, `cancelled` |
-| `completed` | 转换完成，结果可获取 | 终态 |
-| `failed` | 转换失败，有错误信息 | 终态 |
-| `cancelled` | 用户取消 | 终态 |
+| 状态           | 说明                 | 可转换到                                 |
+| -------------- | -------------------- | ---------------------------------------- |
+| `pending`    | 任务已创建，等待处理 | `processing`, `cancelled`            |
+| `processing` | 正在转换中           | `completed`, `failed`, `cancelled` |
+| `completed`  | 转换完成，结果可获取 | 终态                                     |
+| `failed`     | 转换失败，有错误信息 | 终态                                     |
+| `cancelled`  | 用户取消             | 终态                                     |
 
 ## 5. 文件存储结构
 
@@ -271,10 +278,10 @@ storage/
 
 ### 文件命名规则
 
-| 文件类型 | 格式 | 示例 |
-|----------|------|------|
-| 源文件 | `{task_id}_source_{original_filename}` | `task_lz1m2x_source_document.pdf` |
-| 结果文件 | `{task_id}_result.md` | `task_lz1m2x_result.md` |
+| 文件类型 | 格式                                     | 示例                                |
+| -------- | ---------------------------------------- | ----------------------------------- |
+| 源文件   | `{task_id}_source_{original_filename}` | `task_lz1m2x_source_document.pdf` |
+| 结果文件 | `{task_id}_result.md`                  | `task_lz1m2x_result.md`           |
 
 ## 6. 数据库表结构
 
@@ -313,6 +320,7 @@ CREATE INDEX idx_created ON tasks(created_at);
 ```
 
 **返回：**
+
 ```json
 "task_lz1m2x3y4z5a6b7c8d9"
 ```
@@ -326,6 +334,7 @@ CREATE INDEX idx_created ON tasks(created_at);
 ```
 
 **返回：**
+
 ```json
 {
   "task_id": "task_lz1m2x3y4z5a6b7c8d9",
@@ -346,6 +355,7 @@ CREATE INDEX idx_created ON tasks(created_at);
 ```
 
 **返回：**
+
 ```markdown
 # Document Title
 
@@ -361,6 +371,7 @@ Content extracted from the document...
 ```
 
 **返回：**
+
 ```json
 true  // 或 false（如果任务已完成或不存在）
 ```
@@ -375,6 +386,7 @@ true  // 或 false（如果任务已完成或不存在）
 ```
 
 **返回：**
+
 ```json
 [
   {
@@ -394,6 +406,7 @@ true  // 或 false（如果任务已完成或不存在）
 **参数：** 无
 
 **返回：**
+
 ```json
 [
   {"extension": ".pdf", "mimetype": "application/pdf", "ocr_support": true},
@@ -476,7 +489,7 @@ sequenceDiagram
 
     P->>F: read source file
     P->>P: MarkItDown.convert_stream()
-    
+  
     loop Each page (OCR)
         P->>S: update_progress(n, "Page x/y")
         S->>N: notify_progress()
@@ -526,21 +539,22 @@ flowchart TD
     B2 --> B3
     B3 --> A7
     A7 --> A3
-    
+  
     A3 -.->|进度更新| C1[update_progress]
     C1 -.->|SSE 通知| C2[notify_progress]
 ```
 
 ### OCR 进度计算
 
-| 阶段 | 进度范围 | 说明 |
-|------|----------|------|
-| 初始化 | 0-5% | 读取 PDF，检测页数 |
-| 页面提取 | 5-10% | 提取每页图像 |
-| OCR 处理 | 10-95% | 每页 OCR（主要时间） |
-| 合并结果 | 95-100% | 合并所有页面文本 |
+| 阶段     | 进度范围 | 说明                 |
+| -------- | -------- | -------------------- |
+| 初始化   | 0-5%     | 读取 PDF，检测页数   |
+| 页面提取 | 5-10%    | 提取每页图像         |
+| OCR 处理 | 10-95%   | 每页 OCR（主要时间） |
+| 合并结果 | 95-100%  | 合并所有页面文本     |
 
 **进度公式：**
+
 ```python
 # OCR 部分占 85% 的进度
 ocr_progress = 10 + int(page_num / total_pages * 85)
@@ -551,10 +565,10 @@ message = f"OCR processing page {page_num}/{total_pages}"
 
 ## 附录：相关文件
 
-| 文件 | 路径 | 说明 |
-|------|------|------|
-| MCP 入口 | `packages/markitdown-ocr-mcp/src/markitdown_ocr_mcp/__main__.py` | MCP 工具定义 |
-| 任务存储 | `packages/markitdown-ocr-mcp/src/markitdown_ocr_mcp/_task_store.py` | SQLite + 文件管理 |
-| 任务处理 | `packages/markitdown-ocr-mcp/src/markitdown_ocr_mcp/_task_processor.py` | 异步转换处理 |
-| SSE 通知 | `packages/markitdown-ocr-mcp/src/markitdown_ocr_mcp/_sse_notifications.py` | 实时通知服务 |
-| OCR 插件 | `packages/markitdown-ocr/src/markitdown_ocr/_pdf_converter_with_ocr.py` | PDF OCR 转换器 |
+| 文件     | 路径                                                                         | 说明              |
+| -------- | ---------------------------------------------------------------------------- | ----------------- |
+| MCP 入口 | `packages/markitdown-ocr-mcp/src/markitdown_ocr_mcp/__main__.py`           | MCP 工具定义      |
+| 任务存储 | `packages/markitdown-ocr-mcp/src/markitdown_ocr_mcp/_task_store.py`        | SQLite + 文件管理 |
+| 任务处理 | `packages/markitdown-ocr-mcp/src/markitdown_ocr_mcp/_task_processor.py`    | 异步转换处理      |
+| SSE 通知 | `packages/markitdown-ocr-mcp/src/markitdown_ocr_mcp/_sse_notifications.py` | 实时通知服务      |
+| OCR 插件 | `packages/markitdown-ocr/src/markitdown_ocr/_pdf_converter_with_ocr.py`    | PDF OCR 转换器    |

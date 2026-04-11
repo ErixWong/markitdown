@@ -183,6 +183,8 @@ class PdfConverterWithOCR(DocumentConverter):
         stream_info: StreamInfo,
         **kwargs: Any,
     ) -> DocumentConverterResult:
+        # Get progress callback if provided
+        progress_callback = kwargs.get("progress_callback")
         if _dependency_exc_info is not None:
             raise MissingDependencyException(
                 MISSING_DEPENDENCY_MESSAGE.format(
@@ -207,7 +209,14 @@ class PdfConverterWithOCR(DocumentConverter):
 
         try:
             with pdfplumber.open(pdf_bytes) as pdf:
+                total_pages = len(pdf.pages)
+                
                 for page_num, page in enumerate(pdf.pages, 1):
+                    # Report progress if callback provided
+                    if progress_callback:
+                        progress = int((page_num / total_pages) * 100)
+                        progress_callback(progress, f"Parsing page {page_num}/{total_pages}")
+                    
                     markdown_content.append(f"\n## Page {page_num}\n")
 
                     # If OCR is enabled, interleave text and images by position
@@ -328,7 +337,7 @@ class PdfConverterWithOCR(DocumentConverter):
         # treat as scanned PDF and OCR full pages
         if ocr_service and (not markdown or not markdown.strip()):
             pdf_bytes.seek(0)
-            markdown = self._ocr_full_pages(pdf_bytes, ocr_service)
+            markdown = self._ocr_full_pages(pdf_bytes, ocr_service, progress_callback)
 
         return DocumentConverterResult(markdown=markdown)
 
@@ -366,7 +375,8 @@ class PdfConverterWithOCR(DocumentConverter):
         return images
 
     def _ocr_full_pages(
-        self, pdf_bytes: io.BytesIO, ocr_service: LLMVisionOCRService
+        self, pdf_bytes: io.BytesIO, ocr_service: LLMVisionOCRService, 
+        progress_callback: Optional[Any] = None
     ) -> str:
         """
         Fallback for scanned PDFs: Convert entire pages to images and OCR them.
@@ -375,6 +385,7 @@ class PdfConverterWithOCR(DocumentConverter):
         Args:
             pdf_bytes: PDF file as BytesIO
             ocr_service: OCR service to use
+            progress_callback: Optional callback for progress updates (progress, message)
 
         Returns:
             Markdown text extracted from OCR of full pages
@@ -384,7 +395,13 @@ class PdfConverterWithOCR(DocumentConverter):
         try:
             pdf_bytes.seek(0)
             with pdfplumber.open(pdf_bytes) as pdf:
+                total_pages = len(pdf.pages)
                 for page_num, page in enumerate(pdf.pages, 1):
+                    # Report progress if callback provided
+                    if progress_callback:
+                        progress = int((page_num / total_pages) * 100)
+                        progress_callback(progress, f"OCR page {page_num}/{total_pages}")
+                    
                     try:
                         markdown_parts.append(f"\n## Page {page_num}\n")
 
@@ -419,7 +436,13 @@ class PdfConverterWithOCR(DocumentConverter):
 
                 pdf_bytes.seek(0)
                 doc = fitz.open(stream=pdf_bytes.read(), filetype="pdf")
-                for page_num in range(1, doc.page_count + 1):
+                total_pages = doc.page_count
+                for page_num in range(1, total_pages + 1):
+                    # Report progress if callback provided
+                    if progress_callback:
+                        progress = int((page_num / total_pages) * 100)
+                        progress_callback(progress, f"OCR page {page_num}/{total_pages}")
+                    
                     try:
                         markdown_parts.append(f"\n## Page {page_num}\n")
                         page = doc[page_num - 1]
