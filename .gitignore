@@ -166,10 +166,3 @@ cython_debug/
 src/.DS_Store
 .DS_Store
 .cursorrules
-
-# OCR MCP storage directory
-storage/
-
-# Local environment files (keep .env.example)
-packages/markitdown-ocr-mcp/.env
-packages/markitdown-ocr/.env
