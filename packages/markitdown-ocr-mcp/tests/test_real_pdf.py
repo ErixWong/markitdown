@@ -46,15 +46,15 @@ def listen_sse(task_id: str):
                     last_event_time = time.time()
                     
                     # Handle different event types
-                    if event_type == "progress":
+                    if event_type == "task_progress":
                         progress = data.get("progress", 0)
                         message = data.get("message", "")
                         print(f"  [SSE] Progress: {progress}% - {message}")
-                    elif event_type == "completed":
+                    elif event_type == "task_completed":
                         task_completed = True
                         final_result = data.get("result", "")
                         print(f"  [SSE] Task completed! Result length: {len(final_result):,} chars")
-                    elif event_type == "failed":
+                    elif event_type == "task_failed":
                         task_failed = True
                         error = data.get("error", "Unknown error")
                         print(f"  [SSE] Task failed: {error}")
