@@ -11,7 +11,7 @@ Provides:
 import base64
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 from dataclasses import dataclass
@@ -276,7 +276,7 @@ class TaskStore:
     
     def cleanup_old_tasks(self, days: int = 7):
         """Remove tasks and files older than specified days."""
-        cutoff = datetime.now() - datetime.timedelta(days=days)
+        cutoff = datetime.now() - timedelta(days=days)
         
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row

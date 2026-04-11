@@ -55,14 +55,33 @@ def get_task_processor() -> TaskProcessor:
         notification_service = get_notification_service()
         
         def progress_callback(task_id: str, progress: int, message: str):
-            """Callback to send SSE notifications on progress."""
-            asyncio.create_task(
-                notification_service.notify_progress(task_id, progress, message)
-            )
-            if progress == 100:
-                asyncio.create_task(notification_service.notify_completed(task_id))
-            elif progress < 0:
-                asyncio.create_task(notification_service.notify_failed(task_id, message))
+            """Callback to send SSE notifications on progress.
+            
+            Uses asyncio.ensure_future which is safe to call from 
+            synchronous context when event loop is running.
+            """
+            try:
+                loop = asyncio.get_running_loop()
+                loop.call_soon_threadsafe(
+                    lambda: asyncio.ensure_future(
+                        notification_service.notify_progress(task_id, progress, message)
+                    )
+                )
+                if progress == 100:
+                    loop.call_soon_threadsafe(
+                        lambda: asyncio.ensure_future(
+                            notification_service.notify_completed(task_id)
+                        )
+                    )
+                elif progress < 0:
+                    loop.call_soon_threadsafe(
+                        lambda: asyncio.ensure_future(
+                            notification_service.notify_failed(task_id, message)
+                        )
+                    )
+            except RuntimeError:
+                # No running event loop, skip notification
+                pass
         
         _task_processor = TaskProcessor(
             task_store=get_task_store(),

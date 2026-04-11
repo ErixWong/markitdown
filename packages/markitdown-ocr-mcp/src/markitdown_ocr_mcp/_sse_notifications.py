@@ -20,6 +20,9 @@ class SSENotificationService:
     Manages client subscriptions and broadcasts task events.
     """
     
+    # Heartbeat interval in seconds
+    HEARTBEAT_INTERVAL = 30
+    
     def __init__(self):
         self._subscribers: dict[str, list[asyncio.Queue]] = {}
         self._all_subscribers: list[asyncio.Queue] = []
@@ -162,7 +165,7 @@ class SSENotificationService:
     
     async def event_stream(self, task_id: Optional[str] = None) -> AsyncIterator[str]:
         """
-        Generate SSE event stream.
+        Generate SSE event stream with heartbeat.
         
         Args:
             task_id: Optional task ID to filter events
@@ -174,18 +177,27 @@ class SSENotificationService:
         
         try:
             while True:
-                event_data = await queue.get()
-                
-                # Format as SSE
-                event = event_data.get("event", "message")
-                data = json.dumps(event_data.get("data", {}))
-                
-                yield f"event: {event}\n"
-                yield f"data: {data}\n\n"
-                
-                # Stop streaming after completion/failure/cancellation
-                if event in ("task_completed", "task_failed", "task_cancelled"):
-                    break
+                try:
+                    # Wait for event with timeout for heartbeat
+                    event_data = await asyncio.wait_for(
+                        queue.get(), 
+                        timeout=self.HEARTBEAT_INTERVAL
+                    )
+                    
+                    # Format as SSE
+                    event = event_data.get("event", "message")
+                    data = json.dumps(event_data.get("data", {}))
+                    
+                    yield f"event: {event}\n"
+                    yield f"data: {data}\n\n"
+                    
+                    # Stop streaming after completion/failure/cancellation
+                    if event in ("task_completed", "task_failed", "task_cancelled"):
+                        break
+                        
+                except asyncio.TimeoutError:
+                    # Send heartbeat to keep connection alive
+                    yield ": heartbeat\n\n"
         finally:
             self.unsubscribe(queue, task_id)
 
