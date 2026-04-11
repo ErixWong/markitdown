@@ -1,0 +1,1 @@
+# MarkItDown OCR MCP ·þÎñÆ÷ 
