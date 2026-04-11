@@ -17,14 +17,44 @@ from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import StreamingResponse
+from starlette.responses import Response, StreamingResponse
 from starlette.routing import Route, Mount
 from mcp.server.sse import SseServerTransport
 from mcp.server import Server
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from starlette.types import Receive, Scope, Send
 import uvicorn
+
+
+# Default maximum file size (100MB)
+DEFAULT_MAX_FILE_SIZE_MB = 100
+
+
+def get_max_file_size() -> int:
+    """Get maximum file size from environment variable (in bytes)."""
+    max_mb = int(os.getenv("MARKITDOWN_MAX_FILE_SIZE_MB", DEFAULT_MAX_FILE_SIZE_MB))
+    return max_mb * 1024 * 1024
+
+
+# Maximum request body size (read from env)
+MAX_BODY_SIZE = get_max_file_size()
+
+
+class LargeBodyMiddleware(BaseHTTPMiddleware):
+    """Middleware to allow large request bodies."""
+    
+    async def dispatch(self, request: Request, call_next):
+        # Check content-length header if present
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > MAX_BODY_SIZE:
+            return Response(
+                content=f"Request body too large. Maximum size is {MAX_BODY_SIZE} bytes.",
+                status_code=413,
+            )
+        return await call_next(request)
 
 from ._task_store import TaskStore
 from ._task_processor import TaskProcessor
@@ -97,16 +127,18 @@ def get_task_processor() -> TaskProcessor:
 
 @mcp.tool()
 async def submit_conversion_task(
-    content: str,
-    filename: str,
+    content: str = "",
+    filename: str = "",
+    file_path: str = "",
     options: dict = {}
 ) -> str:
     """
     Submit a file conversion task.
     
     Args:
-        content: Base64 encoded file content
+        content: Base64 encoded file content (for small files < 4MB)
         filename: Original filename (used to infer format)
+        file_path: Local file path on server (for large files, bypasses HTTP size limit)
         options: Optional configuration:
             - enable_ocr: Whether to enable OCR (default: false)
             - ocr_prompt: Custom OCR prompt
@@ -114,9 +146,40 @@ async def submit_conversion_task(
     
     Returns:
         task_id: Unique task identifier for tracking
+    
+    Note:
+        For files larger than 4MB, use file_path parameter instead of content.
+        The file_path should be a valid path on the server's filesystem.
     """
     task_store = get_task_store()
-    task_id = task_store.create_task_from_base64(content, filename, options)
+    
+    # Handle file_path mode (for large files)
+    if file_path:
+        import base64
+        import os
+        
+        if not os.path.exists(file_path):
+            return f"Error: File not found: {file_path}"
+        
+        # Read file directly
+        with open(file_path, 'rb') as f:
+            file_content = f.read()
+        
+        # Get filename from path if not provided
+        if not filename:
+            filename = os.path.basename(file_path)
+        
+        task_id = task_store.create_task(
+            task_store.generate_task_id(),
+            file_content,
+            filename,
+            options
+        )
+    else:
+        # Handle Base64 content mode (for small files)
+        if not content:
+            return "Error: Either content or file_path must be provided"
+        task_id = task_store.create_task_from_base64(content, filename, options)
     
     # Start processing in background
     processor = get_task_processor()
@@ -312,6 +375,9 @@ def create_starlette_app(mcp_server: Server, *, debug: bool = False) -> Starlett
             Mount("/messages/", app=sse.handle_post_message),
         ],
         lifespan=lifespan,
+        middleware=[
+            Middleware(LargeBodyMiddleware),
+        ],
     )
 
 
@@ -379,7 +445,15 @@ def main():
         
         starlette_app = create_starlette_app(mcp_server, debug=True)
         port = args.port if args.port else 3001
-        uvicorn.run(starlette_app, host=host, port=port)
+        # Use uvicorn Config to set larger request body size (100MB)
+        config = uvicorn.Config(
+            starlette_app,
+            host=host,
+            port=port,
+            limit_max_requests=100 * 1024 * 1024,  # 100MB - this controls request body size
+        )
+        server = uvicorn.Server(config)
+        server.run()
     else:
         # STDIO mode
         mcp.run()
