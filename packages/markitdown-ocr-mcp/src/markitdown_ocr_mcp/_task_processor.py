@@ -10,11 +10,16 @@ import io
 import re
 import os
 import tempfile
+import logging
+import time
 from typing import Callable, Optional, Awaitable, List
 
 from markitdown import MarkItDown, StreamInfo
 
 from ._task_store import TaskStore
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 
 def parse_page_range(page_range: str, total_pages: int) -> List[int]:
@@ -76,20 +81,32 @@ def extract_pdf_page(pdf_bytes: io.BytesIO, page_num: int) -> io.BytesIO:
     """
     import fitz  # PyMuPDF
     
-    pdf_bytes.seek(0)
-    doc = fitz.open(stream=pdf_bytes.read(), filetype="pdf")
+    start_time = time.time()
+    logger.debug(f"Extracting page {page_num} from PDF...")
     
-    # Create new PDF with single page
-    new_doc = fitz.open()
-    new_doc.insert_pdf(doc, from_page=page_num - 1, to_page=page_num - 1)  # 0-indexed
-    doc.close()
-    
-    # Export to BytesIO
-    single_page_bytes = io.BytesIO(new_doc.tobytes())
-    new_doc.close()
-    single_page_bytes.seek(0)
-    
-    return single_page_bytes
+    try:
+        pdf_bytes.seek(0)
+        doc = fitz.open(stream=pdf_bytes.read(), filetype="pdf")
+        
+        # Create new PDF with single page
+        new_doc = fitz.open()
+        new_doc.insert_pdf(doc, from_page=page_num - 1, to_page=page_num - 1)  # 0-indexed
+        doc.close()
+        
+        # Export to BytesIO
+        single_page_bytes = io.BytesIO(new_doc.tobytes())
+        new_doc.close()
+        single_page_bytes.seek(0)
+        
+        elapsed = time.time() - start_time
+        size_kb = len(single_page_bytes.getvalue()) / 1024
+        logger.info(f"Extracted page {page_num}: {size_kb:.1f}KB in {elapsed:.2f}s")
+        
+        return single_page_bytes
+        
+    except Exception as e:
+        logger.error(f"Failed to extract page {page_num}: {e}")
+        raise
 
 
 def get_pdf_page_count(pdf_bytes: io.BytesIO) -> int:
@@ -104,11 +121,14 @@ def get_pdf_page_count(pdf_bytes: io.BytesIO) -> int:
     """
     import fitz  # PyMuPDF
     
+    logger.debug("Getting PDF page count...")
+    
     pdf_bytes.seek(0)
     doc = fitz.open(stream=pdf_bytes.read(), filetype="pdf")
     page_count = doc.page_count
     doc.close()
     
+    logger.info(f"PDF has {page_count} pages")
     return page_count
 
 
@@ -166,12 +186,17 @@ class TaskProcessor:
         Args:
             task_id: Task ID to process
         """
+        start_time = time.time()
+        
         # Store the current event loop for thread-safe callbacks
         self._event_loop = asyncio.get_running_loop()
         
         task = self.task_store.get_task(task_id)
         if not task:
+            logger.warning(f"Task {task_id} not found")
             return
+        
+        logger.info(f"Processing task {task_id}: {task.source_path}")
         
         # Update status to processing
         await self._report_progress(task_id, 0, "Starting conversion...")
@@ -189,21 +214,30 @@ class TaskProcessor:
             # Get filename for StreamInfo
             filename = task.source_path.split("_source_")[-1] if "_source_" in task.source_path else "document"
             
+            logger.info(f"Task {task_id}: filename={filename} ocr={enable_ocr} page_range={page_range}")
+            
             # Check if it's a PDF and we should process page-by-page
             is_pdf = filename.lower().endswith(".pdf")
             
             if is_pdf and enable_ocr:
                 # Process PDF page-by-page for better progress
+                logger.info(f"Task {task_id}: using page-by-page PDF processing")
                 await self._process_pdf_page_by_page(
                     task_id, file_bytes, filename, page_range, enable_ocr
                 )
             else:
                 # Process as a whole (non-PDF or non-OCR)
+                logger.info(f"Task {task_id}: using whole-file processing")
                 await self._process_whole_file(
                     task_id, file_bytes, filename, enable_ocr
                 )
             
+            elapsed = time.time() - start_time
+            logger.info(f"Task {task_id} completed in {elapsed:.2f}s")
+            
         except Exception as e:
+            elapsed = time.time() - start_time
+            logger.error(f"Task {task_id} failed after {elapsed:.2f}s: {e}")
             self.task_store.fail_task(task_id, str(e))
             if self.progress_callback:
                 await self.progress_callback(task_id, -1, f"Error: {str(e)}")
@@ -226,12 +260,15 @@ class TaskProcessor:
             page_range: Page range string (e.g., "1-5" or "1,3,5")
             enable_ocr: Whether to enable OCR
         """
+        page_process_start = time.time()
+        
         # Get total page count
         await self._report_progress(task_id, 5, "Analyzing PDF...")
         
         try:
             total_pages = await asyncio.to_thread(get_pdf_page_count, pdf_bytes)
         except Exception as e:
+            logger.warning(f"PyMuPDF failed, using pdfplumber fallback: {e}")
             # Fallback: use pdfplumber
             import pdfplumber
             pdf_bytes.seek(0)
@@ -240,8 +277,10 @@ class TaskProcessor:
         
         # Parse page range
         pages_to_process = parse_page_range(page_range, total_pages)
+        logger.info(f"Task {task_id}: total_pages={total_pages} pages_to_process={pages_to_process}")
         
         if not pages_to_process:
+            logger.error(f"Task {task_id}: no valid pages in range '{page_range}'")
             self.task_store.fail_task(task_id, f"No valid pages in range: {page_range}")
             if self.progress_callback:
                 await self.progress_callback(task_id, -1, f"Error: No valid pages in range")
@@ -260,10 +299,13 @@ class TaskProcessor:
         pages_done = 0
         
         for page_num in pages_to_process:
+            page_start = time.time()
+            
             # Check if task was cancelled
             if task_id in self._processing_tasks:
                 task_obj = self._processing_tasks[task_id]
                 if task_obj.cancelled():
+                    logger.info(f"Task {task_id}: cancelled at page {page_num}")
                     self.task_store.cancel_task(task_id)
                     return
             
@@ -279,6 +321,7 @@ class TaskProcessor:
                     extract_pdf_page, pdf_bytes, page_num
                 )
             except Exception as e:
+                logger.error(f"Task {task_id}: failed to extract page {page_num}: {e}")
                 markdown_parts.append(f"\n## Page {page_num}\n\n*[Error extracting page: {str(e)}]*\n")
                 pages_done += 1
                 continue
@@ -293,25 +336,36 @@ class TaskProcessor:
             stream_info = StreamInfo(filename=filename)
             
             try:
+                convert_start = time.time()
                 result = await asyncio.to_thread(
                     mid.convert_stream,
                     single_page_bytes,
                     stream_info=stream_info
                 )
+                convert_elapsed = time.time() - convert_start
                 
                 if result.markdown and result.markdown.strip():
                     # Add page header
                     markdown_parts.append(f"\n## Page {page_num}\n\n{result.markdown.strip()}")
+                    logger.info(f"Task {task_id}: page {page_num} converted in {convert_elapsed:.2f}s, {len(result.markdown)} chars")
                 else:
                     markdown_parts.append(f"\n## Page {page_num}\n\n*[No content extracted]*\n")
+                    logger.warning(f"Task {task_id}: page {page_num} - no content extracted")
                     
             except Exception as e:
+                logger.error(f"Task {task_id}: failed to convert page {page_num}: {e}")
                 markdown_parts.append(f"\n## Page {page_num}\n\n*[Error converting page: {str(e)}]*\n")
+            
+            page_elapsed = time.time() - page_start
+            logger.debug(f"Task {task_id}: page {page_num} total time {page_elapsed:.2f}s")
             
             pages_done += 1
         
         # Combine results
         final_markdown = "\n".join(markdown_parts).strip()
+        
+        total_elapsed = time.time() - page_process_start
+        logger.info(f"Task {task_id}: processed {pages_done} pages in {total_elapsed:.2f}s, total {len(final_markdown)} chars")
         
         # Save result
         self.task_store.complete_task(task_id, final_markdown)

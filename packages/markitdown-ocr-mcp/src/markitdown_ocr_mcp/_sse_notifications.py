@@ -9,8 +9,12 @@ Provides:
 
 import asyncio
 import json
+import logging
 from typing import Optional
 from collections.abc import AsyncIterator
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 
 class SSENotificationService:
@@ -44,8 +48,10 @@ class SSENotificationService:
             if task_id not in self._subscribers:
                 self._subscribers[task_id] = []
             self._subscribers[task_id].append(queue)
+            logger.info(f"SSE client subscribed to task {task_id}")
         else:
             self._all_subscribers.append(queue)
+            logger.info(f"SSE client subscribed to all tasks")
         
         return queue
     
@@ -62,11 +68,13 @@ class SSENotificationService:
                 self._subscribers[task_id].remove(queue)
                 if not self._subscribers[task_id]:
                     del self._subscribers[task_id]
+                logger.info(f"SSE client unsubscribed from task {task_id}")
             except ValueError:
                 pass
         else:
             try:
                 self._all_subscribers.remove(queue)
+                logger.info(f"SSE client unsubscribed from all tasks")
             except ValueError:
                 pass
     
@@ -79,6 +87,8 @@ class SSENotificationService:
             progress: Progress percentage (0-100)
             message: Progress message
         """
+        logger.debug(f"SSE progress: task={task_id} progress={progress}% msg={message}")
+        
         event_data = {
             "event": "task_progress",
             "data": {
@@ -96,6 +106,8 @@ class SSENotificationService:
         Args:
             task_id: Task ID
         """
+        logger.info(f"SSE notification: task {task_id} completed")
+        
         event_data = {
             "event": "task_completed",
             "data": {
@@ -114,6 +126,8 @@ class SSENotificationService:
             task_id: Task ID
             error: Error message
         """
+        logger.error(f"SSE notification: task {task_id} failed - {error}")
+        
         event_data = {
             "event": "task_failed",
             "data": {
@@ -131,6 +145,8 @@ class SSENotificationService:
         Args:
             task_id: Task ID
         """
+        logger.info(f"SSE notification: task {task_id} cancelled")
+        
         event_data = {
             "event": "task_cancelled",
             "data": {
@@ -148,20 +164,27 @@ class SSENotificationService:
             event_data: Event data dictionary
             task_id: Task ID for targeted subscribers
         """
+        event = event_data.get("event", "unknown")
+        subscriber_count = 0
+        
         # Send to task-specific subscribers
         if task_id in self._subscribers:
             for queue in self._subscribers[task_id]:
                 try:
                     await queue.put(event_data)
+                    subscriber_count += 1
                 except asyncio.QueueFull:
-                    pass
+                    logger.warning(f"Queue full for task {task_id} subscriber")
         
         # Send to all-task subscribers
         for queue in self._all_subscribers:
             try:
                 await queue.put(event_data)
+                subscriber_count += 1
             except asyncio.QueueFull:
-                pass
+                logger.warning(f"Queue full for all-tasks subscriber")
+        
+        logger.debug(f"SSE broadcast: event={event} task={task_id} subscribers={subscriber_count}")
     
     async def event_stream(self, task_id: Optional[str] = None) -> AsyncIterator[str]:
         """
