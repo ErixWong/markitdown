@@ -208,6 +208,7 @@ _notification_service: Optional[SSENotificationService] = None
 
 def get_notification_service() -> SSENotificationService:
     """Get or create global notification service."""
+    global _notification_service
     if _notification_service is None:
         _notification_service = SSENotificationService()
     return _notification_service
