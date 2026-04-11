@@ -1,0 +1,80 @@
+version: '3.8'
+
+services:
+  markitdown-ocr-mcp:
+    build:
+      context: ../..
+      dockerfile: packages/markitdown-ocr-mcp/Dockerfile
+    image: markitdown-ocr-mcp:latest
+    container_name: markitdown-ocr-mcp
+    
+    # Environment variables for OCR and server configuration
+    environment:
+      # Required: LLM API key for OCR functionality
+      - MARKITDOWN_OCR_API_KEY=${MARKITDOWN_OCR_API_KEY:-}
+      
+      # OCR model configuration (default: gpt-4o)
+      - MARKITDOWN_OCR_MODEL=${MARKITDOWN_OCR_MODEL:-gpt-4o}
+      
+      # Optional: Custom API base URL (e.g., for Azure OpenAI or other providers)
+      # - MARKITDOWN_OCR_API_BASE=${MARKITDOWN_OCR_API_BASE:-https://api.openai.com/v1}
+      
+      # Enable OCR by default (default: false)
+      - MARKITDOWN_OCR_ENABLED=${MARKITDOWN_OCR_ENABLED:-true}
+      
+      # Storage directory inside container
+      - MARKITDOWN_STORAGE_DIR=/app/storage
+      
+      # Maximum concurrent tasks (default: 3)
+      - MARKITDOWN_MAX_CONCURRENT=${MARKITDOWN_MAX_CONCURRENT:-3}
+      
+      # Maximum file size in MB (default: 100)
+      - MARKITDOWN_MAX_FILE_SIZE_MB=${MARKITDOWN_MAX_FILE_SIZE_MB:-100}
+      
+      # HTTP server configuration (only used in HTTP mode)
+      - MARKITDOWN_MCP_HOST=0.0.0.0
+      - MARKITDOWN_MCP_PORT=3001
+    
+    # Port mapping for HTTP mode
+    ports:
+      - "${MARKITDOWN_MCP_PORT:-3001}:3001"
+    
+    # Volume for persistent storage
+    volumes:
+      - markitdown-storage:/app/storage
+      # Optional: Mount local directory for file access
+      # - ./input:/app/input:ro
+    
+    # Command override for HTTP mode (remove for STDIO mode)
+    command: ["--http", "--host", "0.0.0.0", "--port", "3001"]
+    
+    # For STDIO mode (use with MCP clients like Claude Desktop)
+    # Uncomment the following and comment out 'command' and 'ports' above:
+    # stdin_open: true
+    # tty: true
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import markitdown_ocr_mcp; print('OK')"]
+      interval: 30s
+      timeout: 10s
+      start_period: 5s
+      retries: 3
+    
+    # Restart policy
+    restart: unless-stopped
+    
+    # Resource limits (optional)
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '2'
+    #       memory: 2G
+    #     reservations:
+    #       cpus: '1'
+    #       memory: 512M
+
+# Named volume for persistent storage
+volumes:
+  markitdown-storage:
+    driver: local
