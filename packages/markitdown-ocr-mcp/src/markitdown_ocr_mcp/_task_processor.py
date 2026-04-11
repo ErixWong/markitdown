@@ -295,8 +295,15 @@ class TaskProcessor:
         mid = MarkItDown(enable_plugins=enable_ocr)
         
         # Process each page
+        # Progress allocation:
+        # - 10%: Initial setup (already reported)
+        # - 85%: Page processing (each page = 85/total_pages %)
+        #   - Each page: 5% extract, 80% convert (OCR is slow)
+        # - 5%: Final combine
         markdown_parts = []
         pages_done = 0
+        total_pages_to_process = len(pages_to_process)
+        progress_per_page = 85.0 / total_pages_to_process
         
         for page_num in pages_to_process:
             page_start = time.time()
@@ -309,10 +316,16 @@ class TaskProcessor:
                     self.task_store.cancel_task(task_id)
                     return
             
+            # Calculate progress for this page
+            # Extract phase: 5% of page progress
+            extract_progress = 10 + int(pages_done * progress_per_page + 0.05 * progress_per_page)
+            # Convert phase: 80% of page progress (OCR is the slow part)
+            convert_progress = 10 + int(pages_done * progress_per_page + 0.85 * progress_per_page)
+            
             # Extract single page
             await self._report_progress(
                 task_id, 
-                10 + int((pages_done / len(pages_to_process)) * 85),
+                extract_progress,
                 f"Extracting page {page_num}/{total_pages}..."
             )
             
@@ -326,11 +339,11 @@ class TaskProcessor:
                 pages_done += 1
                 continue
             
-            # Convert single page
+            # Convert single page (OCR - the slow part)
             await self._report_progress(
                 task_id,
-                10 + int((pages_done / len(pages_to_process)) * 85) + 5,
-                f"Converting page {page_num}/{total_pages}..."
+                convert_progress,
+                f"Converting page {page_num}/{total_pages} (OCR)..."
             )
             
             stream_info = StreamInfo(filename=filename)
