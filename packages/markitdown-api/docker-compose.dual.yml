@@ -1,0 +1,86 @@
+version: '3.8'
+
+# MarkItDown API + MCP 双服务部署配置
+# 同时启用 RESTful API 和 MCP HTTP 服务
+
+services:
+  # MarkItDown RESTful API Server
+  markitdown-api:
+    build:
+      context: ../..
+      dockerfile: packages/markitdown-api/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      # API 认证配置
+      - MARKITDOWN_API_KEY=${MARKITDOWN_API_KEY:-your-secret-token-32-chars-min-123}
+      # 存储配置
+      - MARKITDOWN_STORAGE_DIR=/app/storage
+      - MARKITDOWN_MAX_FILE_SIZE=100MB
+      # CORS 配置
+      - MARKITDOWN_CORS_ORIGINS=*
+    volumes:
+      - api-storage:/app/storage
+    command: ["--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - markitdown-network
+
+  # MarkItDown MCP HTTP Server (带 OCR 支持)
+  markitdown-mcp:
+    build:
+      context: ../..
+      dockerfile: packages/markitdown-ocr-mcp/Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      # MCP HTTP 认证配置（与 API 共享 Token 或独立）
+      - MARKITDOWN_API_KEY=${MARKITDOWN_API_KEY:-your-secret-token-32-chars-min-123}
+      # OCR 配置
+      - MARKITDOWN_OCR_API_KEY=${MARKITDOWN_OCR_API_KEY:-sk-your-llm-api-key}
+      - MARKITDOWN_OCR_MODEL=${MARKITDOWN_OCR_MODEL:-gpt-4o}
+      - MARKITDOWN_OCR_API_BASE=${MARKITDOWN_OCR_API_BASE:-https://api.openai.com/v1}
+      - MARKITDOWN_OCR_ENABLED=true
+      # 存储配置
+      - MARKITDOWN_STORAGE_DIR=/app/storage
+      - MARKITDOWN_MAX_FILE_SIZE_MB=100
+      - MARKITDOWN_MAX_CONCURRENT=3
+    volumes:
+      - mcp-storage:/app/storage
+    command: ["--http", "--host", "0.0.0.0", "--port", "3001"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - markitdown-network
+
+  # 可选：Nginx 反向代理（统一入口）
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - markitdown-api
+      - markitdown-mcp
+    networks:
+      - markitdown-network
+    profiles:
+      - with-nginx
+
+volumes:
+  api-storage:
+    driver: local
+  mcp-storage:
+    driver: local
+
+networks:
+  markitdown-network:
+    driver: bridge
