@@ -63,7 +63,16 @@ markitdown-ocr-mcp --http --storage /path/to/storage
 
 ## MCP Tools
 
-### Task Management Tools
+| Tool | Description | Parameters | Transport |
+|------|-------------|------------|-----------|
+| `submit_conversion_task` | Submit a file for conversion | `file_path`, `options` (enable_ocr, ocr_model, page_range, silent) | STDIO / HTTP |
+| `get_task_status` | Query task progress | `task_id` | STDIO / HTTP |
+| `get_task_result` | Get conversion result (markdown) | `task_id` | STDIO / HTTP |
+| `cancel_task` | Cancel a pending/processing task | `task_id` | STDIO / HTTP |
+| `list_tasks` | List tasks with optional filter | `status`, `limit` | STDIO / HTTP |
+| `get_supported_formats` | Get list of supported file formats | None | STDIO / HTTP |
+
+> **Note:** When running in HTTP mode with `MARKITDOWN_API_KEY` set, all HTTP connections require Bearer token authentication in the request header. STDIO mode does not require authentication.
 
 #### `submit_conversion_task`
 
@@ -283,6 +292,7 @@ When submitting a task with `silent: true`, the server will:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `MARKITDOWN_STORAGE_DIR` | Storage directory for tasks | `./storage` |
+| `MARKITDOWN_API_KEY` | **Bearer token for HTTP authentication** | - (disabled) |
 | `MARKITDOWN_OCR_ENABLED` | Enable OCR by default | `false` |
 | `MARKITDOWN_OCR_API_KEY` | API key for LLM OCR | - |
 | `MARKITDOWN_OCR_API_BASE` | API base URL | `https://api.openai.com/v1` |
@@ -292,6 +302,48 @@ When submitting a task with `silent: true`, the server will:
 | `MARKITDOWN_MAX_FILE_SIZE_MB` | Maximum file size in MB | `100` |
 | `MARKITDOWN_MCP_HOST` | HTTP server host | `127.0.0.1` |
 | `MARKITDOWN_MCP_PORT` | HTTP server port | `3001` |
+
+### Bearer Token Authentication
+
+**Authentication is optional** - disabled by default. To enable, set `MARKITDOWN_API_KEY`:
+
+```bash
+# Enable authentication (minimum 32 characters, mixed alphanumeric required)
+export MARKITDOWN_API_KEY="your-secret-token-32-chars-min-with-mixed-123"
+
+# Start server
+markitdown-ocr-mcp --http
+```
+
+**Token Requirements:**
+- Minimum 32 characters
+- Must contain both letters and numbers
+- Weak tokens (< 32 chars) will be rejected and authentication disabled
+
+When authentication is enabled, all HTTP endpoints require a valid Bearer token:
+
+```bash
+# Request with authentication
+curl -X POST "http://localhost:3001/mcp" \
+  -H "Authorization: Bearer your-secret-token" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "method": "tools/list", "id": 1}'
+```
+
+**SSE endpoint with authentication:**
+```bash
+curl -N "http://localhost:3001/tasks/events" \
+  -H "Authorization: Bearer your-secret-token"
+```
+
+**Without valid token:**
+```json
+{
+  "detail": "Bearer token required. Authentication is enabled."
+}
+```
+
+**Note:** Health check endpoints (`/` and `/health`) do not require authentication.
 
 ## Docker
 
@@ -312,6 +364,19 @@ docker run --rm -i markitdown-ocr-mcp:latest
 
 ```bash
 docker run --rm -i \
+  -e MARKITDOWN_API_KEY=your-secret-token \
+  -e MARKITDOWN_OCR_API_KEY=sk-xxx \
+  -e MARKITDOWN_OCR_MODEL=gpt-4o \
+  -p 3001:3001 \
+  -v /path/to/storage:/app/storage \
+  markitdown-ocr-mcp:latest \
+  --http --host 0.0.0.0 --port 3001
+```
+
+**With Authentication:**
+```bash
+docker run --rm -i \
+  -e MARKITDOWN_API_KEY=your-secret-token \
   -e MARKITDOWN_OCR_API_KEY=sk-xxx \
   -e MARKITDOWN_OCR_MODEL=gpt-4o \
   -p 3001:3001 \
@@ -335,6 +400,49 @@ docker run --rm -i \
         "markitdown-ocr-mcp:latest"
       ]
     }
+  }
+}
+```
+
+**HTTP Mode with Authentication:**
+```json
+{
+  "mcpServers": {
+    "markitdown-ocr": {
+      "command": "docker",
+      "args": [
+        "run", "--rm", "-i",
+        "-e", "MARKITDOWN_API_KEY=your-secret-token",
+        "-e", "MARKITDOWN_OCR_API_KEY=sk-xxx",
+        "-e", "MARKITDOWN_OCR_MODEL=gpt-4o",
+        "-v", "/home/user/storage:/app/storage",
+        "-p", "3001:3001",
+        "markitdown-ocr-mcp:latest",
+        "--http", "--host", "0.0.0.0", "--port", "3001"
+      ]
+    }
+  }
+}
+```
+
+**HTTP Mode without Authentication (Local Only):**
+```json
+{
+  "mcpServers": {
+    "markitdown-ocr": {
+      "command": "docker",
+      "args": [
+        "run", "--rm", "-i",
+        "-e", "MARKITDOWN_OCR_API_KEY=sk-xxx",
+        "-e", "MARKITDOWN_OCR_MODEL=gpt-4o",
+        "-v", "/home/user/storage:/app/storage",
+        "-p", "3001:3001",
+        "markitdown-ocr-mcp:latest",
+        "--http", "--host", "0.0.0.0", "--port", "3001"
+      ]
+    }
+  }
+}
   }
 }
 ```
@@ -376,7 +484,28 @@ storage/
 
 ## Security Considerations
 
-- **No Authentication**: Server runs with user privileges
+### Bearer Token Authentication (HTTP Mode)
+
+When running in HTTP mode, you can enable optional Bearer token authentication:
+
+```bash
+export MARKITDOWN_API_KEY="your-secret-token"
+markitdown-ocr-mcp --http
+```
+
+When enabled:
+- All HTTP endpoints require a valid `Authorization: Bearer <token>` header
+- Health check endpoints (`/` and `/health`) remain accessible without authentication
+- STDIO mode is not affected (authentication only applies to HTTP transport)
+
+**Best Practices:**
+- Use strong, randomly generated tokens
+- Never expose `MARKITDOWN_API_KEY` in logs or client-side code
+- When binding to non-localhost interfaces, **always enable authentication**
+
+### General Security
+
+- **Authentication**: Optional via `MARKITDOWN_API_KEY` (disabled by default)
 - **Localhost Binding**: HTTP mode binds to localhost by default
 - **File Access**: Can read files accessible to the user
 - **API Key Security**: Never expose API keys in logs or responses

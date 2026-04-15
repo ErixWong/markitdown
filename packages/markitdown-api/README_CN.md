@@ -14,16 +14,19 @@
 
 ## 与其他包的对比
 
-| 功能 | markitdown (核心) | markitdown-mcp | markitdown-ocr-mcp | **markitdown-api** |
-|------|-------------------|----------------|--------------------|--------------------|
+| 功能 | markitdown (核心) | markitdown-mcp | markitdown-ocr-mcp | markitdown-api |
+|------|-------------------|----------------|--------------------|----------------|
 | Python API | ✅ | ❌ | ❌ | ❌ |
 | CLI | ✅ | ❌ | ❌ | ❌ |
 | MCP 协议 | ❌ | ✅ (STDIO) | ✅ (STDIO/HTTP) | ❌ |
-| **RESTful HTTP API** | ❌ | ❌ | ❌ | **✅** |
+| RESTful HTTP API | ❌ | ❌ | ❌ | ✅ |
+| 文件传输方式 | ❌ | Base64 | Base64 | Base64 + Form Data |
+| 异步方式 | ❌ | ❌ | ✅ (MCP工具 + SSE) | ✅ (REST接口 + SSE) |
+| 逐页处理 | ❌ | ❌ | ✅ | ✅ |
 | SSE 通知 | ❌ | ❌ | ✅ | ✅ |
 | OCR 支持 | ❌ | ❌ | ✅ | ✅ |
 | 任务管理 | ❌ | ❌ | ✅ | ✅ |
-| 直接转换 | ❌ | ❌ | ❌ | ✅ |
+| 同步转换（阻塞式） | ❌ | ❌ | ❌ | ✅ |
 
 ## 安装
 
@@ -147,6 +150,23 @@ export MARKITDOWN_MAX_FILE_SIZE="104857600"  # 直接指定字节数
 ```
 
 ## API 接口
+
+| 方法 | 接口 | 说明 | 需要认证 |
+|------|------|------|----------|
+| GET | `/` | 根接口 - 健康检查 | 否 |
+| GET | `/health` | 健康检查（含版本/运行时间） | 否 |
+| POST | `/tasks` | 提交文件转换任务（multipart） | 是 |
+| POST | `/tasks/base64` | 提交 Base64 编码内容任务 | 是 |
+| GET | `/tasks` | 列出任务（支持筛选） | 是 |
+| GET | `/tasks/{id}` | 获取任务状态和进度 | 是 |
+| GET | `/tasks/{id}/result` | 获取转换结果（markdown） | 是 |
+| DELETE | `/tasks/{id}` | 取消待处理/进行中的任务 | 是 |
+| GET | `/tasks/{id}/events` | 订阅单个任务的 SSE 事件 | 是 |
+| GET | `/tasks/events` | 订阅所有任务的 SSE 事件 | 是 |
+| GET | `/formats` | 获取支持的文件格式列表 | 是 |
+| POST | `/convert` | 直接同步转换 | 是 |
+
+> **说明：** 认证是可选的。当设置了 `MARKITDOWN_API_KEY` 时，除 `/` 和 `/health` 外所有接口都需要 Bearer Token。
 
 ### 健康检查
 
