@@ -45,6 +45,11 @@ dependencies = [
 ocr = [
     "markitdown-ocr",
     "openai>=1.0.0",
+    "PyMuPDF>=1.24.0",
+]
+pdf = [
+    "PyMuPDF>=1.24.0",
+    "pdfplumber>=0.10.0",
 ]
 dev = [
     "pytest>=7.0.0",
