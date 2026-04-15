@@ -63,7 +63,16 @@ markitdown-ocr-mcp --http --storage /path/to/storage
 
 ## MCP 工具
 
-### 任务管理工具
+| 工具 | 说明 | 参数 | 传输方式 |
+|------|------|------|----------|
+| `submit_conversion_task` | 提交文件转换任务 | `file_path`, `options` (enable_ocr, ocr_model, page_range, silent) | STDIO / HTTP |
+| `get_task_status` | 查询任务进度 | `task_id` | STDIO / HTTP |
+| `get_task_result` | 获取转换结果（markdown） | `task_id` | STDIO / HTTP |
+| `cancel_task` | 取消待处理/进行中的任务 | `task_id` | STDIO / HTTP |
+| `list_tasks` | 列出任务（支持筛选） | `status`, `limit` | STDIO / HTTP |
+| `get_supported_formats` | 获取支持的文件格式列表 | 无 | STDIO / HTTP |
+
+> **说明：** 在 HTTP 模式下运行时，如果设置了 `MARKITDOWN_API_KEY`，所有 HTTP 连接需要在请求头中携带 Bearer Token 进行认证。STDIO 模式无需认证。
 
 #### `submit_conversion_task`
 
@@ -283,6 +292,7 @@ def listen_sse(task_id: str):
 | 变量 | 描述 | 默认值 |
 |------|------|--------|
 | `MARKITDOWN_STORAGE_DIR` | 任务存储目录 | `./storage` |
+| `MARKITDOWN_API_KEY` | **HTTP认证的 Bearer Token** | -（禁用） |
 | `MARKITDOWN_OCR_ENABLED` | 默认启用 OCR | `false` |
 | `MARKITDOWN_OCR_API_KEY` | LLM OCR 的 API 密钥 | - |
 | `MARKITDOWN_OCR_API_BASE` | API 基础 URL | `https://api.openai.com/v1` |
@@ -292,6 +302,48 @@ def listen_sse(task_id: str):
 | `MARKITDOWN_MAX_FILE_SIZE_MB` | 最大文件大小（MB） | `100` |
 | `MARKITDOWN_MCP_HOST` | HTTP 服务器主机 | `127.0.0.1` |
 | `MARKITDOWN_MCP_PORT` | HTTP 服务器端口 | `3001` |
+
+### Bearer Token 认证
+
+**认证是可选的** - 默认禁用。启用需设置 `MARKITDOWN_API_KEY`：
+
+```bash
+# 启用认证（最少32字符，需包含字母和数字）
+export MARKITDOWN_API_KEY="your-secret-token-32-chars-min-with-mixed-123"
+
+# 启动服务
+markitdown-ocr-mcp --http
+```
+
+**Token 要求：**
+- 最少 32 个字符
+- 必须同时包含字母和数字
+- 弱 Token（< 32 字符）将被拒绝，认证禁用
+
+启用认证后，所有 HTTP 接口都需要有效的 Bearer Token：
+
+```bash
+# 带认证的请求
+curl -X POST "http://localhost:3001/mcp" \
+  -H "Authorization: Bearer your-secret-token" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "method": "tools/list", "id": 1}'
+```
+
+**SSE 端点带认证：**
+```bash
+curl -N "http://localhost:3001/tasks/events" \
+  -H "Authorization: Bearer your-secret-token"
+```
+
+**无效 token 时：**
+```json
+{
+  "detail": "Bearer token required. Authentication is enabled."
+}
+```
+
+**说明：** 健康检查接口（`/` 和 `/health`）无需认证。
 
 ## Docker
 
@@ -312,6 +364,19 @@ docker run --rm -i markitdown-ocr-mcp:latest
 
 ```bash
 docker run --rm -i \
+  -e MARKITDOWN_API_KEY=your-secret-token \
+  -e MARKITDOWN_OCR_API_KEY=sk-xxx \
+  -e MARKITDOWN_OCR_MODEL=gpt-4o \
+  -p 3001:3001 \
+  -v /path/to/storage:/app/storage \
+  markitdown-ocr-mcp:latest \
+  --http --host 0.0.0.0 --port 3001
+```
+
+**启用认证：**
+```bash
+docker run --rm -i \
+  -e MARKITDOWN_API_KEY=your-secret-token \
   -e MARKITDOWN_OCR_API_KEY=sk-xxx \
   -e MARKITDOWN_OCR_MODEL=gpt-4o \
   -p 3001:3001 \
@@ -339,7 +404,28 @@ docker run --rm -i \
 }
 ```
 
-**HTTP 模式：**
+**HTTP 模式（带认证）：**
+```json
+{
+  "mcpServers": {
+    "markitdown-ocr": {
+      "command": "docker",
+      "args": [
+        "run", "--rm", "-i",
+        "-e", "MARKITDOWN_API_KEY=your-secret-token",
+        "-e", "MARKITDOWN_OCR_API_KEY=sk-xxx",
+        "-e", "MARKITDOWN_OCR_MODEL=gpt-4o",
+        "-v", "/home/user/storage:/app/storage",
+        "-p", "3001:3001",
+        "markitdown-ocr-mcp:latest",
+        "--http", "--host", "0.0.0.0", "--port", "3001"
+      ]
+    }
+  }
+}
+```
+
+**HTTP 模式（无认证，仅本地）：**
 ```json
 {
   "mcpServers": {
@@ -376,7 +462,28 @@ storage/
 
 ## 安全注意事项
 
-- **无身份验证**：服务器以用户权限运行
+### Bearer Token 认证（HTTP 模式）
+
+在 HTTP 模式下运行时，可以启用可选的 Bearer Token 认证：
+
+```bash
+export MARKITDOWN_API_KEY="your-secret-token"
+markitdown-ocr-mcp --http
+```
+
+启用后：
+- 所有 HTTP 接口需要有效的 `Authorization: Bearer <token>` 头部
+- 健康检查接口（`/` 和 `/health`）无需认证即可访问
+- STDIO 模式不受影响（认证仅适用于 HTTP 传输）
+
+**最佳实践：**
+- 使用强随机生成的 Token
+- 切勿在日志或客户端代码中暴露 `MARKITDOWN_API_KEY`
+- 绑定到非 localhost 接口时，**务必启用认证**
+
+### 一般安全
+
+- **认证**：通过 `MARKITDOWN_API_KEY` 可选启用（默认禁用）
 - **本地主机绑定**：HTTP 模式默认绑定到 localhost
 - **文件访问**：可以读取用户可访问的文件
 - **API 密钥安全**：切勿在日志或响应中暴露 API 密钥

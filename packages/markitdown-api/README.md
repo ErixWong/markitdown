@@ -14,16 +14,19 @@ A RESTful API server for [MarkItDown](https://github.com/microsoft/markitdown) t
 
 ## Comparison with Other Packages
 
-| Feature | markitdown (Core) | markitdown-mcp | markitdown-ocr-mcp | **markitdown-api** |
-|---------|-------------------|----------------|--------------------|--------------------|
+| Feature | markitdown (Core) | markitdown-mcp | markitdown-ocr-mcp | markitdown-api |
+|---------|-------------------|----------------|--------------------|----------------|
 | Python API | ✅ | ❌ | ❌ | ❌ |
 | CLI | ✅ | ❌ | ❌ | ❌ |
 | MCP Protocol | ❌ | ✅ (STDIO) | ✅ (STDIO/HTTP) | ❌ |
-| **RESTful HTTP API** | ❌ | ❌ | ❌ | **✅** |
+| RESTful HTTP API | ❌ | ❌ | ❌ | ✅ |
+| File Transfer | ❌ | Base64 | Base64 | Base64 + Form Data |
+| Async Mode | ❌ | ❌ | ✅ (MCP Tools + SSE) | ✅ (REST API + SSE) |
+| Page-by-Page Processing | ❌ | ❌ | ✅ | ✅ |
 | SSE Notifications | ❌ | ❌ | ✅ | ✅ |
 | OCR Support | ❌ | ❌ | ✅ | ✅ |
 | Task Management | ❌ | ❌ | ✅ | ✅ |
-| Direct Conversion | ❌ | ❌ | ❌ | ✅ |
+| Synchronous (Blocking) Conversion | ❌ | ❌ | ❌ | ✅ |
 
 ## Installation
 
@@ -168,6 +171,23 @@ export MARKITDOWN_MAX_FILE_SIZE="104857600"  # Raw bytes
 ```
 
 ## API Endpoints
+
+| Method | Endpoint | Description | Auth Required |
+|--------|----------|-------------|---------------|
+| GET | `/` | Health check root | No |
+| GET | `/health` | Health check with version/uptime | No |
+| POST | `/tasks` | Submit file conversion task (multipart) | Yes |
+| POST | `/tasks/base64` | Submit task with Base64 content | Yes |
+| GET | `/tasks` | List tasks with optional filter | Yes |
+| GET | `/tasks/{id}` | Get task status and progress | Yes |
+| GET | `/tasks/{id}/result` | Get conversion result (markdown) | Yes |
+| DELETE | `/tasks/{id}` | Cancel a pending/processing task | Yes |
+| GET | `/tasks/{id}/events` | Subscribe to SSE events for a task | Yes |
+| GET | `/tasks/events` | Subscribe to SSE events for all tasks | Yes |
+| GET | `/formats` | Get list of supported file formats | Yes |
+| POST | `/convert` | Direct synchronous conversion | Yes |
+
+> **Note:** Authentication is optional. When `MARKITDOWN_API_KEY` is set, all endpoints except `/` and `/health` require Bearer token.
 
 ### Health & Info
 

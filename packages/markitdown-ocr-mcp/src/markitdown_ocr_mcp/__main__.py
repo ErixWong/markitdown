@@ -11,6 +11,8 @@ Enhanced MCP server with:
 import asyncio
 import contextlib
 import os
+import re
+import secrets
 import sys
 from collections.abc import AsyncIterator
 from typing import Optional
@@ -68,6 +70,63 @@ class LargeBodyMiddleware(BaseHTTPMiddleware):
                 content=f"Request body too large. Maximum size is {MAX_BODY_SIZE} bytes.",
                 status_code=413,
             )
+        return await call_next(request)
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    """Middleware to verify Bearer token for HTTP endpoints."""
+    
+    @staticmethod
+    def _is_strong_token(key: str) -> bool:
+        """Check if API key meets minimum security requirements."""
+        # Minimum 32 characters with mixed alphanumeric
+        return len(key) >= 32 and bool(re.search(r'[A-Za-z].*\d|\d.*[A-Za-z]', key))
+    
+    async def dispatch(self, request: Request, call_next):
+        api_key = os.getenv("MARKITDOWN_API_KEY", "").strip()
+        
+        # If no API key configured or empty string, skip authentication
+        if not api_key:
+            return await call_next(request)
+        
+        # Validate token strength (weak tokens are rejected)
+        if not self._is_strong_token(api_key):
+            logger = getattr(call_next.__self__, 'logger', None)
+            if logger:
+                logger.error("MARKITDOWN_API_KEY too weak (< 32 chars or no mixed alphanumeric). Authentication disabled.")
+            return await call_next(request)
+        
+        # Check if this is a health check endpoint (allow without auth)
+        if request.url.path in ["/", "/health"]:
+            return await call_next(request)
+        
+        # Verify Bearer token
+        auth_header = request.headers.get("authorization")
+        if not auth_header:
+            return Response(
+                content='{"detail": "Bearer token required. Authentication is enabled."}',
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        # Parse Bearer token
+        parts = auth_header.split()
+        if len(parts) != 2 or parts[0].lower() != "bearer":
+            return Response(
+                content='{"detail": "Invalid authorization header format. Use: Bearer <token>"}',
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        token = parts[1]
+        # Timing-safe comparison to prevent timing attacks
+        if not secrets.compare_digest(token, api_key):
+            return Response(
+                content='{"detail": "Invalid Bearer token"}',
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
         return await call_next(request)
 
 from ._task_store import TaskStore
@@ -398,6 +457,7 @@ def create_starlette_app(mcp_server: Server, *, debug: bool = False) -> Starlett
         lifespan=lifespan,
         middleware=[
             Middleware(LargeBodyMiddleware),
+            Middleware(AuthMiddleware),
         ],
     )
 
@@ -455,15 +515,30 @@ def main():
         # Read host from args or env or default
         host = args.host if args.host else os.getenv("MARKITDOWN_MCP_HOST", "127.0.0.1")
         
+        # Check if authentication is enabled
+        api_key = os.getenv("MARKITDOWN_API_KEY", "").strip()
+        auth_enabled = bool(api_key)
+        
         if args.host and args.host not in ("127.0.0.1", "localhost"):
-            print(
-                "\n"
-                "WARNING: Binding to non-localhost interface.\n"
-                "This exposes the server to other machines.\n"
-                "The server has NO authentication.\n"
-                "Only proceed if you understand the security implications.\n",
-                file=sys.stderr,
-            )
+            if auth_enabled:
+                print(
+                    "\n"
+                    "WARNING: Binding to non-localhost interface.\n"
+                    "Authentication is ENABLED via MARKITDOWN_API_KEY.\n"
+                    "All HTTP endpoints require a valid Bearer token.\n"
+                    "Only proceed if you understand the security implications.\n",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "\n"
+                    "WARNING: Binding to non-localhost interface.\n"
+                    "This exposes the server to other machines.\n"
+                    "The server has NO authentication.\n"
+                    "Consider setting MARKITDOWN_API_KEY to enable Bearer token auth.\n"
+                    "Only proceed if you understand the security implications.\n",
+                    file=sys.stderr,
+                )
         
         starlette_app = create_starlette_app(mcp_server, debug=True)
         # Read port from args or env or default
