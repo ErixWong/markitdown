@@ -5,10 +5,7 @@
 FROM python:3.11-slim
 
 # 安装系统依赖
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    libmagic1 \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends     curl     libmagic1     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -17,13 +14,10 @@ COPY packages/markitdown /app/packages/markitdown
 COPY packages/markitdown-ocr /app/packages/markitdown-ocr
 COPY packages/markitdown-api /app/packages/markitdown-api
 COPY packages/markitdown-ocr-mcp /app/packages/markitdown-ocr-mcp
+COPY packages/markitdown-mcp /app/packages/markitdown-mcp
 
 # 安装所有包
-RUN pip install --no-cache-dir \
-    -e /app/packages/markitdown[all] \
-    -e /app/packages/markitdown-ocr \
-    -e /app/packages/markitdown-api \
-    -e /app/packages/markitdown-ocr-mcp
+RUN pip install --no-cache-dir     -e /app/packages/markitdown[all]     -e /app/packages/markitdown-ocr     -e /app/packages/markitdown-api     -e /app/packages/markitdown-ocr-mcp     -e /app/packages/markitdown-mcp
 
 # 创建存储目录
 RUN mkdir -p /app/storage
@@ -42,5 +36,6 @@ EXPOSE 8000 3001
 # 用法:
 #   docker run <image> markitdown-api --host 0.0.0.0 --port 8000
 #   docker run <image> markitdown-ocr-mcp --http --host 0.0.0.0 --port 3001
+#   docker run <image> markitdown-mcp --http --host 0.0.0.0 --port 3001
 ENTRYPOINT []
 CMD []
