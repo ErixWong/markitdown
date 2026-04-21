@@ -16,6 +16,7 @@ import secrets
 import sys
 from collections.abc import AsyncIterator
 from typing import Optional
+from urllib.parse import urlparse
 
 # Load .env file if it exists
 try:
@@ -74,7 +75,7 @@ class LargeBodyMiddleware(BaseHTTPMiddleware):
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
-    """Middleware to verify Bearer token for HTTP endpoints."""
+    """Middleware to verify Bearer token and Origin header for HTTP endpoints."""
     
     @staticmethod
     def _is_strong_token(key: str) -> bool:
@@ -82,7 +83,71 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # Minimum 32 characters with mixed alphanumeric
         return len(key) >= 32 and bool(re.search(r'[A-Za-z].*\d|\d.*[A-Za-z]', key))
     
+    @staticmethod
+    def _is_valid_origin(origin: str, host: str) -> bool:
+        """
+        Validate Origin header to prevent DNS rebinding attacks.
+        
+        Per MCP 2025-11-25 spec:
+        Servers MUST validate the Origin header on all incoming connections.
+        If the Origin header is present and invalid, servers MUST respond with HTTP 403.
+        
+        Valid origins:
+        - Same origin (matches Host header)
+        - localhost / 127.0.0.1 when server is localhost
+        - null origin (for local file:// origins)
+        """
+        if not origin or origin == "null":
+            return True
+        
+        try:
+            origin_parts = urlparse(origin)
+            origin_hostname = origin_parts.hostname
+            origin_port = origin_parts.port
+            
+            # Fill default port for origin if not explicitly specified
+            if origin_port is None:
+                if origin_parts.scheme == "https":
+                    origin_port = 443
+                elif origin_parts.scheme == "http":
+                    origin_port = 80
+            
+            # Parse Host header
+            host_parts = host.split(":")
+            host_hostname = host_parts[0]
+            host_port = int(host_parts[1]) if len(host_parts) > 1 else None
+            
+            # Fill default port for host if not explicitly specified
+            if host_port is None:
+                if origin_parts.scheme == "https":
+                    host_port = 443
+                elif origin_parts.scheme == "http":
+                    host_port = 80
+            
+            # Check if same origin (hostname + port match)
+            if origin_hostname == host_hostname and origin_port == host_port:
+                return True
+            
+            # Allow localhost origins when server is localhost
+            if host_hostname in ("localhost", "127.0.0.1"):
+                if origin_hostname in ("localhost", "127.0.0.1", None):
+                    return True
+            
+            return False
+        except Exception:
+            return False
+    
     async def dispatch(self, request: Request, call_next):
+        # Per MCP 2025-11-25 spec: Validate Origin header to prevent DNS rebinding attacks
+        origin = request.headers.get("origin")
+        host = request.headers.get("host", "")
+        
+        if origin and not self._is_valid_origin(origin, host):
+            return Response(
+                content='{"detail": "Forbidden: Invalid Origin header. DNS rebinding attack detected."}',
+                status_code=403,
+            )
+        
         api_key = os.getenv("MARKITDOWN_API_KEY", "").strip()
         
         # If no API key configured or empty string, skip authentication
@@ -199,7 +264,7 @@ async def submit_conversion_task(
     filename: str = "",
     file_path: str = "",
     options: dict = {}
-) -> str:
+) -> dict:
     """
     Submit a file conversion task.
     
@@ -215,107 +280,110 @@ async def submit_conversion_task(
             - ocr_model: OCR model name
     
     Returns:
-        task_id: Unique task identifier for tracking
+        Dictionary containing:
+        - task_id: Unique task identifier for tracking
+        - status: "submitted"
     
     Note:
         For files larger than 4MB, use file_path parameter instead of content.
         The file_path should be a valid path on the server's filesystem.
         
-        When enable_ocr is true for PDF files, the document is processed page-by-page
-        with real-time progress updates via SSE. Use page_range to process only
-        specific pages (useful for large documents or testing).
+        When enable_ocr is true for PDF files, the document is processed page-by-page.
+        Use get_task to poll progress and retrieve results.
         
         Set silent=true to avoid progress notifications - useful when LLM doesn't want
         to be disturbed by progress updates. Only completion/failure events will be sent.
     """
     task_store = get_task_store()
     
-    # Handle file_path mode (for large files)
     if file_path:
-        import base64
-        import os
-        
         if not os.path.exists(file_path):
-            return f"Error: File not found: {file_path}"
+            return {"task_id": "", "status": "error", "error": f"File not found: {file_path}"}
         
-        # Read file directly
         with open(file_path, 'rb') as f:
             file_content = f.read()
         
-        # Get filename from path if not provided
         if not filename:
             filename = os.path.basename(file_path)
         
-        # Generate task_id first, then create task
-        generated_task_id = task_store.generate_task_id()
-        task_store.create_task(
-            generated_task_id,
-            file_content,
-            filename,
-            options
-        )
-        task_id = generated_task_id
+        task_id = task_store.generate_task_id()
+        task_store.create_task(task_id, file_content, filename, options)
     else:
-        # Handle Base64 content mode (for small files)
         if not content:
-            return "Error: Either content or file_path must be provided"
+            return {"task_id": "", "status": "error", "error": "Either content or file_path must be provided"}
         task_id = task_store.create_task_from_base64(content, filename, options)
     
-    # Start processing in background
     processor = get_task_processor()
     processor.start_processing(task_id)
     
-    return task_id
+    return {"task_id": task_id, "status": "submitted"}
 
 
 @mcp.tool()
-async def get_task_status(task_id: str) -> dict:
+async def get_task(task_id: str) -> dict:
     """
-    Get task status and progress.
+    Get task status and result.
+    
+    Unified tool for querying task information. Returns different content based on task state:
+    - If processing: returns progress information
+    - If completed: returns the conversion result (Markdown content)
+    - If failed: returns error information
     
     Args:
         task_id: Task ID to query
     
     Returns:
-        Task status information:
-            - task_id: Task identifier
-            - status: pending/processing/completed/failed/cancelled
-            - progress: 0-100
-            - message: Progress message
-            - created_at: Creation timestamp
-            - updated_at: Last update timestamp
+        Dictionary containing:
+        - task_id: Task identifier
+        - status: Task status (pending/processing/completed/failed/cancelled/not_found)
+        - For processing status: progress (0-100), message, created_at, updated_at
+        - For completed status: result (Markdown content), created_at, completed_at
+        - For failed/cancelled status: error message, created_at, updated_at
+    
+    Note:
+        In Streamable HTTP mode (SSE), clients can receive real-time progress 
+        notifications without polling. In JSON response mode, use this tool 
+        to poll for progress and results.
     """
     task_store = get_task_store()
-    return task_store.get_task_status(task_id)
-
-
-@mcp.tool()
-async def get_task_result(task_id: str) -> str:
-    """
-    Get conversion result (Markdown content).
+    task = task_store.get_task(task_id)
     
-    Args:
-        task_id: Task ID to get result for
+    base = {
+        "task_id": task_id,
+        "created_at": task.created_at.isoformat() if task and task.created_at else None,
+    }
     
-    Returns:
-        Markdown content of the conversion result
-        
-    Error:
-        Returns error message if task is not completed or not found
-    """
-    task_store = get_task_store()
-    result = task_store.get_result(task_id)
+    if task is None:
+        return {**base, "status": "not_found", "error": f"Task '{task_id}' not found"}
     
-    if result is None:
-        task = task_store.get_task(task_id)
-        if task is None:
-            return "Error: Task not found"
-        elif task.status != "completed":
-            return f"Error: Task status is '{task.status}', not 'completed'"
-        else:
-            return "Error: Result not available"
+    if task.status in ["pending", "processing"]:
+        return {
+            **base,
+            "status": task.status,
+            "progress": task.progress,
+            "message": task.message,
+            "updated_at": task.updated_at.isoformat() if task.updated_at else None,
+        }
     
-    return result
+    if task.status in ["failed", "cancelled"]:
+        return {
+            **base,
+            "status": task.status,
+            "message": task.message,
+            "updated_at": task.updated_at.isoformat() if task.updated_at else None,
+            "error": task.message if task.status == "failed" else "Task was cancelled",
+        }
+    
+    if task.status == "completed":
+        result = task_store.get_result(task_id)
+        return {
+            **base,
+            "status": "completed",
+            "result": result if result else "Error: Result not available",
+            "completed_at": task.updated_at.isoformat() if task.updated_at else None,
+        }
+    
+    return {**base, "status": task.status, "error": f"Unknown task status: {task.status}"}
 
 
 @mcp.tool()
@@ -394,17 +462,28 @@ async def get_supported_formats() -> list[dict]:
 # =============================================================================
 
 def create_starlette_app(mcp_server: Server, *, debug: bool = False) -> Starlette:
-    """Create Starlette application with HTTP and SSE support."""
+    """
+    Create Starlette application with HTTP and SSE support.
+    
+    Supports two MCP transport modes (configurable via MARKITDOWN_MCP_STREAMING env):
+    - JSON Response Mode (default): Simple request/response, use get_task tool to poll progress
+    - SSE Stream Mode: Real-time progress notifications in MCP SSE stream
+    """
+    # Check if SSE streaming mode is enabled (for real-time progress in MCP stream)
+    # If True: Use SSE streams for MCP communication (real-time progress notifications)
+    # If False (default): Use simple JSON responses (poll via get_task tool)
+    use_streaming = os.getenv("MARKITDOWN_MCP_STREAMING", "false").lower() == "true"
+    
     sse = SseServerTransport("/messages/")
     session_manager = StreamableHTTPSessionManager(
         app=mcp_server,
         event_store=None,
-        json_response=True,
+        json_response=not use_streaming,  # JSON mode when not streaming
         stateless=True,
     )
     
     async def handle_sse(request: Request) -> None:
-        """Handle SSE connections for MCP."""
+        """Handle legacy SSE connections for MCP (deprecated HTTP+SSE transport)."""
         async with sse.connect_sse(
             request.scope,
             request.receive,
@@ -419,11 +498,45 @@ def create_starlette_app(mcp_server: Server, *, debug: bool = False) -> Starlett
     async def handle_streamable_http(
         scope: Scope, receive: Receive, send: Send
     ) -> None:
-        """Handle Streamable HTTP requests."""
+        """
+        Handle Streamable HTTP requests.
+        
+        Per MCP 2025-11-25 spec:
+        - POST: Handle JSON-RPC messages
+        - GET: In stateless mode, return 405 Method Not Allowed (no standalone SSE stream)
+        - DELETE: Return 405 (session termination not supported in stateless mode)
+        
+        Mode behavior:
+        - JSON mode (default): Simple request/response, clients poll get_task for progress
+        - SSE mode: Real-time progress notifications in MCP stream (set MARKITDOWN_MCP_STREAMING=true)
+        """
+        method = scope.get("method", "GET")
+        
+        # In stateless mode, GET requests should return 405
+        # Per spec: "The server MUST either return Content-Type: text/event-stream ...
+        # or else return HTTP 405 Method Not Allowed, indicating that the server does
+        # not offer an SSE stream at this endpoint."
+        if method == "GET" and session_manager.stateless:
+            response = Response(
+                content='{"error": "Method Not Allowed: Standalone SSE stream not available in stateless mode. Use POST for MCP requests."}',
+                status_code=405,
+                headers={"Allow": "POST"},
+            )
+            await response(scope, receive, send)
+            return
+        
         await session_manager.handle_request(scope, receive, send)
     
     async def handle_task_events(request: Request) -> StreamingResponse:
-        """Handle SSE endpoint for task notifications."""
+        """
+        Handle SSE endpoint for task notifications (custom extension, not part of MCP protocol).
+        
+        This endpoint provides real-time task progress updates via SSE for clients that
+        need streaming updates but are using JSON response mode for MCP.
+        
+        In Streamable HTTP mode (MARKITDOWN_MCP_STREAMING=true), progress notifications
+        are sent directly in the MCP SSE stream instead of through this endpoint.
+        """
         task_id = request.query_params.get("task_id")
         notification_service = get_notification_service()
         
