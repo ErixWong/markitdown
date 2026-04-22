@@ -1,1 +1,0 @@
-Cross-service test file content
