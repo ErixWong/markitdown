@@ -1,0 +1,80 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "markitdown-server"
+dynamic = ["version"]
+description = "Unified MarkItDown Server - REST API and MCP protocol with OCR support"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Microsoft Corporation" }
+]
+keywords = ["markdown", "conversion", "api", "rest", "mcp", "ocr", "async"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "markitdown",
+    "mcp~=1.8.0",
+    "fastapi>=0.100.0",
+    "starlette>=0.27.0",
+    "uvicorn>=0.23.0",
+    "python-multipart>=0.0.6",
+    "aiofiles>=23.0.0",
+    "pydantic>=2.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+ocr = [
+    "markitdown-ocr",
+    "openai>=1.0.0",
+    "PyMuPDF>=1.24.0",
+]
+pdf = [
+    "PyMuPDF>=1.24.0",
+    "pdfplumber>=0.10.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "httpx>=0.24.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+markitdown-server = "markitdown_server.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/microsoft/markitdown"
+Documentation = "https://github.com/microsoft/markitdown#readme"
+Repository = "https://github.com/microsoft/markitdown.git"
+Issues = "https://github.com/microsoft/markitdown/issues"
+
+[tool.hatch.version]
+path = "src/markitdown_server/__about__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/markitdown_server"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
