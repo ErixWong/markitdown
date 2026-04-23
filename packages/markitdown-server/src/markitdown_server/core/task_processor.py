@@ -93,7 +93,7 @@ class TaskProcessor:
         self._markitdown = self._create_markitdown()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop_lock = threading.Lock()
-        self._loop_thread: Optional[asyncio.Thread] = None
+        self._loop_thread: Optional[threading.Thread] = None
 
     def _create_ocr_markitdown(self) -> Optional[MarkItDown]:
         try:
