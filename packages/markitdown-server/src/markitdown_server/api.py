@@ -7,7 +7,7 @@ from datetime import datetime
 
 from typing import Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile, Query, BackgroundTasks, Depends
+from fastapi import FastAPI, File, HTTPException, UploadFile, Query, BackgroundTasks, Depends, Form
 from fastapi.responses import StreamingResponse, JSONResponse
 
 from .__about__ import __version__
@@ -89,10 +89,10 @@ def register_routes(app: FastAPI, start_time: float):
     async def submit_task(
         background_tasks: BackgroundTasks,
         file: UploadFile = File(...),
-        enable_ocr: bool = Query(default=False, description="Enable OCR for image extraction"),
-        ocr_model: Optional[str] = Query(default=None, description="OCR model name"),
-        page_range: Optional[str] = Query(default=None, description="Page range for PDF"),
-        silent: bool = Query(default=False, description="Suppress progress notifications"),
+        enable_ocr: bool = Form(default=False, description="Enable OCR for image extraction"),
+        ocr_model: Optional[str] = Form(default=None, description="OCR model name"),
+        page_range: Optional[str] = Form(default=None, description="Page range for PDF"),
+        silent: bool = Form(default=False, description="Suppress progress notifications"),
         _: Optional[str] = Depends(verify_token_or_passthrough),
     ):
         task_store = get_task_store()
@@ -112,10 +112,10 @@ def register_routes(app: FastAPI, start_time: float):
         background_tasks: BackgroundTasks,
         content: str,
         filename: str,
-        enable_ocr: bool = Query(default=False),
-        ocr_model: Optional[str] = Query(default=None),
-        page_range: Optional[str] = Query(default=None),
-        silent: bool = Query(default=False),
+        enable_ocr: bool = Form(default=False),
+        ocr_model: Optional[str] = Form(default=None),
+        page_range: Optional[str] = Form(default=None),
+        silent: bool = Form(default=False),
         _: Optional[str] = Depends(verify_token_or_passthrough),
     ):
         task_store = get_task_store()
