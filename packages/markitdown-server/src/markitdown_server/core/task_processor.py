@@ -166,9 +166,9 @@ class TaskProcessor:
                     if api_key:
                         client = OpenAI(api_key=api_key, base_url=api_base or None)
                         md = MarkItDown(enable_plugins=True, llm_client=client, llm_model=model)
-                        logger.info("Task {task_id}: using MarkItDown with OCR")
+                        logger.info(f"Task {task_id}: using MarkItDown with OCR")
                     else:
-                        logger.warning("Task {task_id}: OCR requested but MARKITDOWN_OCR_API_KEY not set")
+                        logger.warning(f"Task {task_id}: OCR requested but MARKITDOWN_OCR_API_KEY not set")
                 except ImportError:
                     logger.warning("Task {task_id}: OCR requested but markitdown-ocr not available")
             self.task_store.update_task(task_id, progress=10, message="Reading file")
@@ -264,7 +264,7 @@ class TaskProcessor:
                     logger.info(f"Task {task_id}: page {page_num} converted in {convert_elapsed:.2f}s, {len(result.text_content)} chars")
                 else:
                     markdown_parts.append(f"\n## Page {page_num}\n\n*[No content extracted]*\n")
-                    logger.warning(f"Task {task_id}: page {page_num} - no content extracted")
+                    logger.warning(f"Task {task_id}: page {page_num} - no content extracted (OCR may have failed)")
             except Exception as e:
                 logger.error(f"Task {task_id}: failed to convert page {page_num}: {e}")
                 markdown_parts.append(f"\n## Page {page_num}\n\n*[Error converting page: {str(e)}]*\n")
