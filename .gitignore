@@ -169,3 +169,7 @@ src/.DS_Store
 
 # Server storage (task data, SQLite DB)
 packages/markitdown-server/storage/
+
+# Node.js test scripts
+tests/
+!tests/.gitkeep
