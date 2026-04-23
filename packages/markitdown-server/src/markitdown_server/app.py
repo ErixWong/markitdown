@@ -26,6 +26,10 @@ from .mcp import mcp as mcp_instance
 
 logger = logging.getLogger(__name__)
 
+# Build timestamp - update this when code changes
+# Format: YYYY-MM-DD HH:MM:SS
+BUILD_TIME = "2026-04-23 11:40:00"
+
 
 def create_unified_app(
     enable_api: bool = True,
@@ -43,6 +47,7 @@ def create_unified_app(
         return JSONResponse({
             "status": "healthy",
             "version": __version__,
+            "build_time": BUILD_TIME,
             "uptime": time.time() - start_time,
             "services": services,
         })
