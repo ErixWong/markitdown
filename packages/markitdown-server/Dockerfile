@@ -14,12 +14,12 @@ COPY packages/markitdown-server /app/packages/markitdown-server
 RUN pip install --no-cache-dir \
     -e /app/packages/markitdown[all] \
     -e /app/packages/markitdown-ocr \
-    -e /app/packages/markitdown-server
+    -e /app/packages/markitdown-server[ocr]
 
 RUN mkdir -p /app/storage
 
 ENV MARKITDOWN_STORAGE_DIR=/app/storage
-ENV MARKITDOWN_OCR_ENABLED=false
+ENV MARKITDOWN_OCR_ENABLED=true
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health 2>/dev/null || exit 1
