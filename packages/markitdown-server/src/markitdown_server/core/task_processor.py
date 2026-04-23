@@ -99,10 +99,21 @@ class TaskProcessor:
         enable_ocr = os.getenv("MARKITDOWN_OCR_ENABLED", "false").lower() == "true" or self.enable_ocr
         if enable_ocr:
             try:
-                from markitdown_ocr import MarkItDownOCR
-                return MarkItDownOCR(enable_plugins=True)
-            except ImportError:
-                logger.warning("markitdown-ocr not installed, using standard MarkItDown")
+                from markitdown_ocr import LLMVisionOCRService
+                from openai import OpenAI
+                api_key = os.getenv("MARKITDOWN_OCR_API_KEY")
+                api_base = os.getenv("MARKITDOWN_OCR_API_BASE")
+                model = os.getenv("MARKITDOWN_OCR_MODEL", "gpt-4o")
+                if not api_key:
+                    logger.warning("MARKITDOWN_OCR_API_KEY not set, OCR will not work")
+                    return MarkItDown(enable_plugins=True)
+                client = OpenAI(api_key=api_key, base_url=api_base or None)
+                ocr_service = LLMVisionOCRService(client=client, model=model)
+                md = MarkItDown(enable_plugins=True, llm_client=client, llm_model=model)
+                logger.info("Created MarkItDown with OCR support")
+                return md
+            except ImportError as e:
+                logger.warning(f"markitdown-ocr or openai not installed: {e}")
                 return MarkItDown(enable_plugins=True)
         else:
             return MarkItDown(enable_plugins=False)
@@ -147,10 +158,19 @@ class TaskProcessor:
             md = self._markitdown
             if enable_ocr:
                 try:
-                    from markitdown_ocr import MarkItDownOCR
-                    md = MarkItDownOCR(enable_plugins=True)
+                    from markitdown_ocr import LLMVisionOCRService
+                    from openai import OpenAI
+                    api_key = os.getenv("MARKITDOWN_OCR_API_KEY")
+                    api_base = os.getenv("MARKITDOWN_OCR_API_BASE")
+                    model = os.getenv("MARKITDOWN_OCR_MODEL", "gpt-4o")
+                    if api_key:
+                        client = OpenAI(api_key=api_key, base_url=api_base or None)
+                        md = MarkItDown(enable_plugins=True, llm_client=client, llm_model=model)
+                        logger.info("Task {task_id}: using MarkItDown with OCR")
+                    else:
+                        logger.warning("Task {task_id}: OCR requested but MARKITDOWN_OCR_API_KEY not set")
                 except ImportError:
-                    logger.warning("OCR requested but markitdown-ocr not available")
+                    logger.warning("Task {task_id}: OCR requested but markitdown-ocr not available")
             self.task_store.update_task(task_id, progress=10, message="Reading file")
             if self.progress_callback and not silent:
                 await self.progress_callback(task_id, 10, "Reading file")
@@ -198,10 +218,19 @@ class TaskProcessor:
         md = self._markitdown
         if enable_ocr:
             try:
-                from markitdown_ocr import MarkItDownOCR
-                md = MarkItDownOCR(enable_plugins=True)
-            except ImportError:
-                logger.warning("OCR requested but markitdown-ocr not available")
+                from markitdown_ocr import LLMVisionOCRService
+                from openai import OpenAI
+                api_key = os.getenv("MARKITDOWN_OCR_API_KEY")
+                api_base = os.getenv("MARKITDOWN_OCR_API_BASE")
+                model = os.getenv("MARKITDOWN_OCR_MODEL", "gpt-4o")
+                if api_key:
+                    client = OpenAI(api_key=api_key, base_url=api_base or None)
+                    md = MarkItDown(enable_plugins=True, llm_client=client, llm_model=model)
+                    logger.info(f"Task {task_id}: using MarkItDown with OCR (page-by-page)")
+                else:
+                    logger.warning(f"Task {task_id}: OCR requested but MARKITDOWN_OCR_API_KEY not set")
+            except ImportError as e:
+                logger.warning(f"Task {task_id}: OCR requested but markitdown-ocr not available: {e}")
         markdown_parts = []
         pages_done = 0
         total_pages_to_process = len(pages_to_process)
