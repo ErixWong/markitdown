@@ -74,8 +74,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if not is_strong_token(api_key):
             return await call_next(request)
         path = request.url.path
-        public_paths = ("/", "/health", "/api/", "/api/health", "/api/docs", "/api/redoc", "/api/openapi.json", "/api/formats")
-        if path in public_paths:
+        public_prefixes = ("/", "/health", "/api/docs", "/api/redoc", "/api/openapi.json", "/api/formats")
+        if path in ("/", "/health") or path.startswith("/api/docs") or path.startswith("/api/redoc") or path.startswith("/api/openapi") or path.startswith("/api/formats"):
             return await call_next(request)
         auth_header = request.headers.get("authorization")
         if not auth_header:

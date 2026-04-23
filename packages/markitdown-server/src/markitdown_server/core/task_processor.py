@@ -93,30 +93,33 @@ class TaskProcessor:
         self._markitdown = self._create_markitdown()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop_lock = threading.Lock()
-        self._loop_thread: Optional[threading.Thread] = None
+        self._loop_thread: Optional[asyncio.Thread] = None
+
+    def _create_ocr_markitdown(self) -> Optional[MarkItDown]:
+        try:
+            from openai import OpenAI
+            api_key = os.getenv("MARKITDOWN_OCR_API_KEY")
+            api_base = os.getenv("MARKITDOWN_OCR_API_BASE")
+            model = os.getenv("MARKITDOWN_OCR_MODEL", "gpt-4o")
+            if not api_key:
+                logger.warning("MARKITDOWN_OCR_API_KEY not set, OCR will not work")
+                return None
+            client = OpenAI(api_key=api_key, base_url=api_base or None)
+            md = MarkItDown(enable_plugins=True, llm_client=client, llm_model=model)
+            logger.info("Created MarkItDown with OCR support")
+            return md
+        except ImportError as e:
+            logger.warning(f"markitdown-ocr or openai not installed: {e}")
+            return None
 
     def _create_markitdown(self) -> MarkItDown:
         enable_ocr = os.getenv("MARKITDOWN_OCR_ENABLED", "false").lower() == "true" or self.enable_ocr
         if enable_ocr:
-            try:
-                from markitdown_ocr import LLMVisionOCRService
-                from openai import OpenAI
-                api_key = os.getenv("MARKITDOWN_OCR_API_KEY")
-                api_base = os.getenv("MARKITDOWN_OCR_API_BASE")
-                model = os.getenv("MARKITDOWN_OCR_MODEL", "gpt-4o")
-                if not api_key:
-                    logger.warning("MARKITDOWN_OCR_API_KEY not set, OCR will not work")
-                    return MarkItDown(enable_plugins=True)
-                client = OpenAI(api_key=api_key, base_url=api_base or None)
-                ocr_service = LLMVisionOCRService(client=client, model=model)
-                md = MarkItDown(enable_plugins=True, llm_client=client, llm_model=model)
-                logger.info("Created MarkItDown with OCR support")
+            md = self._create_ocr_markitdown()
+            if md:
                 return md
-            except ImportError as e:
-                logger.warning(f"markitdown-ocr or openai not installed: {e}")
-                return MarkItDown(enable_plugins=True)
-        else:
-            return MarkItDown(enable_plugins=False)
+            return MarkItDown(enable_plugins=True)
+        return MarkItDown(enable_plugins=False)
 
     def _ensure_loop(self) -> asyncio.AbstractEventLoop:
         with self._loop_lock:
@@ -135,6 +138,16 @@ class TaskProcessor:
             self._processing_tasks[task_id] = task
 
         loop.call_soon_threadsafe(_create_and_track)
+
+    async def _get_markitdown_for_task(self, task_id: str, enable_ocr: bool) -> MarkItDown:
+        if not enable_ocr:
+            return self._markitdown
+        md = self._create_ocr_markitdown()
+        if md:
+            logger.info(f"Task {task_id}: using MarkItDown with OCR")
+            return md
+        logger.warning(f"Task {task_id}: OCR requested but unavailable, using default")
+        return self._markitdown
 
     async def _process_task(self, task_id: str):
         task = self.task_store.get_task(task_id)
@@ -155,22 +168,7 @@ class TaskProcessor:
             page_range = options.get("page_range")
             silent = options.get("silent", False)
             logger.info(f"Processing task {task_id}: {filename}, OCR={enable_ocr}")
-            md = self._markitdown
-            if enable_ocr:
-                try:
-                    from markitdown_ocr import LLMVisionOCRService
-                    from openai import OpenAI
-                    api_key = os.getenv("MARKITDOWN_OCR_API_KEY")
-                    api_base = os.getenv("MARKITDOWN_OCR_API_BASE")
-                    model = os.getenv("MARKITDOWN_OCR_MODEL", "gpt-4o")
-                    if api_key:
-                        client = OpenAI(api_key=api_key, base_url=api_base or None)
-                        md = MarkItDown(enable_plugins=True, llm_client=client, llm_model=model)
-                        logger.info(f"Task {task_id}: using MarkItDown with OCR")
-                    else:
-                        logger.warning(f"Task {task_id}: OCR requested but MARKITDOWN_OCR_API_KEY not set")
-                except ImportError:
-                    logger.warning("Task {task_id}: OCR requested but markitdown-ocr not available")
+            md = await self._get_markitdown_for_task(task_id, enable_ocr)
             self.task_store.update_task(task_id, progress=10, message="Reading file")
             if self.progress_callback and not silent:
                 await self.progress_callback(task_id, 10, "Reading file")
@@ -182,10 +180,10 @@ class TaskProcessor:
             is_pdf = filename.lower().endswith(".pdf")
             if is_pdf and enable_ocr:
                 logger.info(f"Task {task_id}: using page-by-page PDF processing")
-                await self._process_pdf_page_by_page(task_id, content, filename, page_range, enable_ocr, silent)
+                await self._process_pdf_page_by_page(task_id, content, filename, page_range, md, silent)
             else:
                 logger.info(f"Task {task_id}: using whole-file processing")
-                await self._process_whole_file(task_id, content, filename, enable_ocr, silent)
+                await self._process_whole_file(task_id, content, filename, md, silent)
             logger.info(f"Task {task_id} completed successfully")
         except Exception as e:
             logger.error(f"Task {task_id} failed: {e}")
@@ -196,7 +194,7 @@ class TaskProcessor:
             self._processing_tasks.pop(task_id, None)
             self._cancelled_tasks.discard(task_id)
 
-    async def _process_pdf_page_by_page(self, task_id: str, pdf_bytes: bytes, filename: str, page_range: Optional[str], enable_ocr: bool, silent: bool):
+    async def _process_pdf_page_by_page(self, task_id: str, pdf_bytes: bytes, filename: str, page_range: Optional[str], md: MarkItDown, silent: bool):
         page_process_start = time.time()
         await self._report_progress(task_id, 5, "Analyzing PDF...", silent)
         try:
@@ -212,25 +210,9 @@ class TaskProcessor:
             logger.error(f"Task {task_id}: no valid pages in range '{page_range}'")
             self.task_store.update_task(task_id, status=TaskStatus.FAILED, progress=-1, message=f"No valid pages in range: {page_range}", error=f"No valid pages in range: {page_range}")
             if self.progress_callback:
-                await self.progress_callback(task_id, -1, f"Error: No valid pages in range")
+                await self.progress_callback(task_id, -1, "Error: No valid pages in range")
             return
         await self._report_progress(task_id, PROGRESS_INITIAL_SETUP, f"Processing {len(pages_to_process)} of {total_pages} pages...", silent)
-        md = self._markitdown
-        if enable_ocr:
-            try:
-                from markitdown_ocr import LLMVisionOCRService
-                from openai import OpenAI
-                api_key = os.getenv("MARKITDOWN_OCR_API_KEY")
-                api_base = os.getenv("MARKITDOWN_OCR_API_BASE")
-                model = os.getenv("MARKITDOWN_OCR_MODEL", "gpt-4o")
-                if api_key:
-                    client = OpenAI(api_key=api_key, base_url=api_base or None)
-                    md = MarkItDown(enable_plugins=True, llm_client=client, llm_model=model)
-                    logger.info(f"Task {task_id}: using MarkItDown with OCR (page-by-page)")
-                else:
-                    logger.warning(f"Task {task_id}: OCR requested but MARKITDOWN_OCR_API_KEY not set")
-            except ImportError as e:
-                logger.warning(f"Task {task_id}: OCR requested but markitdown-ocr not available: {e}")
         markdown_parts = []
         pages_done = 0
         total_pages_to_process = len(pages_to_process)
@@ -278,7 +260,7 @@ class TaskProcessor:
         if self.progress_callback:
             await self.progress_callback(task_id, 100, "Conversion completed")
 
-    async def _process_whole_file(self, task_id: str, content: bytes, filename: str, enable_ocr: bool, silent: bool):
+    async def _process_whole_file(self, task_id: str, content: bytes, filename: str, md: MarkItDown, silent: bool):
         self.task_store.update_task(task_id, progress=30, message="Converting to markdown")
         if self.progress_callback and not silent:
             await self.progress_callback(task_id, 30, "Converting to markdown")
@@ -287,7 +269,6 @@ class TaskProcessor:
             if self.progress_callback:
                 await self.progress_callback(task_id, -1, "Task cancelled")
             return
-        md = self._markitdown
         result = await asyncio.get_event_loop().run_in_executor(self._executor, lambda: md.convert_stream(io.BytesIO(content)))
         if task_id in self._cancelled_tasks:
             self.task_store.update_task(task_id, status=TaskStatus.CANCELLED, progress=-1, message="Task cancelled")
