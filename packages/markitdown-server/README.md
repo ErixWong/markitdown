@@ -59,6 +59,9 @@ MCP tools (via `/mcp` or `/mcp/sse`):
 | `MARKITDOWN_SERVER_PORT` | `8000` | Port to listen on |
 | `MARKITDOWN_API_KEY` | _(empty)_ | Enable Bearer token auth (min 32 chars) |
 | `MARKITDOWN_OCR_ENABLED` | `false` | Enable OCR by default |
+| `MARKITDOWN_OCR_API_KEY` | _(empty)_ | **Required for OCR**: OpenAI-compatible API key |
+| `MARKITDOWN_OCR_API_BASE` | _(empty)_ | Custom API base URL (Azure, DeepSeek, etc.) |
+| `MARKITDOWN_OCR_MODEL` | `gpt-4o` | LLM Vision model for OCR |
 | `MARKITDOWN_MAX_FILE_SIZE` | `100MB` | Max file size (supports KB/MB/GB) |
 | `MARKITDOWN_MAX_FILE_SIZE_MB` | `100` | Max file size in MB (alternative) |
 | `MARKITDOWN_CORS_ORIGINS` | `*` | CORS origins (comma-separated) |
