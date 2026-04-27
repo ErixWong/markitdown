@@ -108,6 +108,32 @@ docker compose -f packages/markitdown-server/docker-compose.yml run --rm markitd
 docker compose -f packages/markitdown-server/docker-compose.yml run --rm markitdown-server --no-api
 ```
 
+## Reverse Proxy (Nginx)
+
+When deploying behind Nginx with HTTPS, the backend may return `307` redirects with `http://` in the `Location` header (e.g., `/mcp` → `/mcp/`). This causes clients to follow the redirect to plain HTTP, which fails. Add `proxy_redirect` to fix this:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name your-domain.com;
+
+    ssl_certificate     /path/to/fullchain.pem;
+    ssl_certificate_key /path/to/privkey.pem;
+
+    location / {
+        client_max_body_size 100m;
+        proxy_pass http://127.0.0.1:8000;
+        proxy_redirect http:// $scheme://;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+`proxy_redirect http:// $scheme://;` rewrites the backend's `Location: http://...` to `https://...`, ensuring redirects work correctly through the reverse proxy.
+
 ## MCP Client Configuration
 
 For Claude Desktop or other MCP clients using SSE:
