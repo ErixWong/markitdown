@@ -4,29 +4,31 @@ import logging
 import os
 import time
 from datetime import datetime
-
 from typing import Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile, Query, BackgroundTasks, Depends, Form
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
 
 from .__about__ import __version__
+from .core.auth import verify_token_or_passthrough
 from .core.models import (
+    SUPPORTED_FORMATS,
     CancelTaskResponse,
     HealthResponse,
+    QueueStatsResponse,
     SubmitTaskResponse,
     SupportedFormatsResponse,
-    TaskListResponse,
     TaskListItem,
+    TaskListResponse,
     TaskResultResponse,
     TaskStatus,
     TaskStatusResponse,
-    SUPPORTED_FORMATS,
 )
-from .core.task_store import get_task_store
-from .core.task_processor import get_task_processor
 from .core.sse_notifications import get_notification_service
-from .core.auth import verify_token_or_passthrough
+from .core.task_processor import get_task_processor
+from .core.task_queue import TaskDispatchStrategyFactory
+from .core.task_store import get_task_store
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -48,6 +50,62 @@ def get_max_file_size() -> int:
         except ValueError:
             logger.warning(f"Invalid MARKITDOWN_MAX_FILE_SIZE value: {env_value}, using default 100MB")
             return DEFAULT_MAX_FILE_SIZE
+
+
+class QueuePriorityRequest(BaseModel):
+    task_id: str = Field(..., description="Task identifier to promote")
+
+
+class QueueStrategyRequest(BaseModel):
+    strategy: str = Field(..., description="Target strategy: fifo or ratio")
+    params: dict = Field(default_factory=dict, description="Strategy parameters")
+
+
+class QueueRatiosRequest(BaseModel):
+    small_ratio: float = Field(..., ge=0.0, le=1.0, description="Small queue ratio")
+    large_ratio: float = Field(..., ge=0.0, le=1.0, description="Large queue ratio")
+
+
+class QueueTaskRequest(BaseModel):
+    task_id: str = Field(..., description="Task identifier to remove")
+
+
+_admin_rate_limit_store: dict = {}
+
+
+def _check_admin_rate_limit(client_id: str, max_requests: int = 30, window_seconds: int = 60) -> bool:
+    import time
+    now = time.time()
+    if client_id not in _admin_rate_limit_store:
+        _admin_rate_limit_store[client_id] = []
+    timestamps = _admin_rate_limit_store[client_id]
+    _admin_rate_limit_store[client_id] = [t for t in timestamps if now - t < window_seconds]
+    timestamps = _admin_rate_limit_store[client_id]
+    if len(timestamps) >= max_requests:
+        return False
+    timestamps.append(now)
+    return True
+
+
+def verify_admin_token(authorization: Optional[str] = Header(default=None), request: Request = None):
+    admin_token = os.getenv("MARKITDOWN_ADMIN_TOKEN", "")
+    if not admin_token:
+        raise HTTPException(status_code=401, detail="Admin authentication not configured")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Bearer token required")
+    token = authorization[7:]
+    import secrets
+    if not secrets.compare_digest(token, admin_token):
+        raise HTTPException(status_code=401, detail="Invalid admin token")
+
+    client_id = "admin"
+    if request and request.client:
+        client_id = request.client.host
+
+    if not _check_admin_rate_limit(client_id):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Maximum 30 requests per 60 seconds.")
+
+    return token
 
 
 def create_app(enable_cors: bool = True) -> FastAPI:
@@ -95,6 +153,13 @@ def register_routes(app: FastAPI, start_time: float):
         silent: bool = Form(default=False, description="Suppress progress notifications"),
         _: Optional[str] = Depends(verify_token_or_passthrough),
     ):
+        processor = get_task_processor()
+        if processor._dispatch_strategy.is_queue_full():
+            raise HTTPException(
+                status_code=503,
+                detail="Queue is full, please retry later",
+                headers={"Retry-After": "5"}
+            )
         task_store = get_task_store()
         max_file_size = get_max_file_size()
         content = await file.read()
@@ -103,7 +168,6 @@ def register_routes(app: FastAPI, start_time: float):
         options = {"enable_ocr": enable_ocr, "ocr_model": ocr_model, "page_range": page_range, "silent": silent}
         task_id = task_store.generate_task_id()
         task = task_store.create_task(task_id, content, file.filename or "unknown", options)
-        processor = get_task_processor()
         background_tasks.add_task(processor.start_processing, task_id)
         return SubmitTaskResponse(task_id=task_id, message="Task submitted successfully", created_at=task.created_at)
 
@@ -118,6 +182,13 @@ def register_routes(app: FastAPI, start_time: float):
         silent: bool = Form(default=False),
         _: Optional[str] = Depends(verify_token_or_passthrough),
     ):
+        processor = get_task_processor()
+        if processor._dispatch_strategy.is_queue_full():
+            raise HTTPException(
+                status_code=503,
+                detail="Queue is full, please retry later",
+                headers={"Retry-After": "5"}
+            )
         task_store = get_task_store()
         max_file_size = get_max_file_size()
         try:
@@ -129,7 +200,6 @@ def register_routes(app: FastAPI, start_time: float):
         options = {"enable_ocr": enable_ocr, "ocr_model": ocr_model, "page_range": page_range, "silent": silent}
         task_id = task_store.generate_task_id()
         task = task_store.create_task(task_id, file_content, filename, options)
-        processor = get_task_processor()
         background_tasks.add_task(processor.start_processing, task_id)
         return SubmitTaskResponse(task_id=task_id, message="Task submitted successfully", created_at=task.created_at)
 
@@ -230,3 +300,86 @@ def register_routes(app: FastAPI, start_time: float):
             return JSONResponse(content={"markdown": result.text_content})
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Conversion failed: {e}")
+
+    @app.get("/admin/queue/stats", response_model=QueueStatsResponse)
+    async def get_queue_stats(_: str = Depends(verify_admin_token)):
+        processor = get_task_processor()
+        return processor.get_queue_stats()
+
+    @app.post("/admin/queue/priority")
+    async def promote_task_priority(
+        body: QueuePriorityRequest,
+        _: str = Depends(verify_admin_token)
+    ):
+        processor = get_task_processor()
+        result = await processor.promote_task(body.task_id)
+        if result.get("success"):
+            return JSONResponse(content={
+                "task_id": body.task_id,
+                "status": "promoted",
+                "message": "Task promoted to head of queue",
+                "previous_position": result.get("position"),
+                "new_position": 1,
+            })
+        else:
+            raise HTTPException(status_code=404, detail=result.get("error", "Task not found"))
+
+    @app.put("/admin/queue/strategy")
+    async def switch_strategy(
+        body: QueueStrategyRequest,
+        _: str = Depends(verify_admin_token)
+    ):
+        processor = get_task_processor()
+        previous_strategy = processor._dispatch_strategy.strategy_name
+        try:
+            new_strategy = TaskDispatchStrategyFactory.create(body.strategy, **body.params)
+            processor.set_dispatch_strategy(new_strategy)
+            return JSONResponse(content={
+                "previous_strategy": previous_strategy,
+                "current_strategy": body.strategy,
+                "status": "switched",
+                "message": f"Strategy switched from {previous_strategy} to {body.strategy}",
+            })
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Strategy switch failed: {str(e)}")
+
+    @app.put("/admin/queue/ratios")
+    async def update_ratios(
+        body: QueueRatiosRequest,
+        _: str = Depends(verify_admin_token)
+    ):
+        processor = get_task_processor()
+        strategy = processor._dispatch_strategy
+        if strategy.strategy_name != "ratio":
+            raise HTTPException(status_code=400, detail="Ratio adjustment only available for ratio strategy")
+        try:
+            result = await strategy.set_ratios(body.small_ratio, body.large_ratio)
+            if result.get("success"):
+                return JSONResponse(content={
+                    "previous_ratios": result["previous_ratios"],
+                    "current_ratios": result["current_ratios"],
+                    "status": "updated",
+                    "message": "Ratios updated successfully",
+                })
+            else:
+                raise HTTPException(status_code=400, detail=result.get("error", "Invalid ratios"))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @app.delete("/admin/queue/task")
+    async def remove_task_from_queue(
+        body: QueueTaskRequest,
+        _: str = Depends(verify_admin_token)
+    ):
+        processor = get_task_processor()
+        removed = await processor.remove_task_from_queue(body.task_id)
+        if removed:
+            return JSONResponse(content={
+                "task_id": body.task_id,
+                "status": "removed",
+                "message": "Task removed from queue",
+            })
+        else:
+            raise HTTPException(status_code=404, detail="Task not found in queue")
