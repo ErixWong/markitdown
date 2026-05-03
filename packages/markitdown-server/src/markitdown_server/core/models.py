@@ -90,6 +90,48 @@ class HealthResponse(BaseModel):
     uptime: float = Field(..., description="Server uptime in seconds")
 
 
+class QueueStatsResponse(BaseModel):
+    strategy: str = Field(..., description="Current strategy: fifo or ratio")
+    max_concurrent: int = Field(..., description="Maximum concurrent tasks")
+    total_queued: int = Field(default=0, description="Total tasks waiting in queue")
+    total_processing: int = Field(default=0, description="Total tasks currently processing")
+    total_completed: int = Field(default=0, description="Historical completed tasks")
+    total_failed: int = Field(default=0, description="Historical failed tasks")
+    active_tasks: list[dict] = Field(default_factory=list, description="Currently active tasks")
+    small_queue: Optional[dict] = Field(default=None, description="Small queue stats (ratio strategy only)")
+    large_queue: Optional[dict] = Field(default=None, description="Large queue stats (ratio strategy only)")
+    fifo_queue: Optional[dict] = Field(default=None, description="FIFO queue stats")
+    ratio_config: Optional[dict] = Field(default=None, description="Current ratio configuration")
+
+
+class QueuePriorityResponse(BaseModel):
+    task_id: str = Field(..., description="Task identifier")
+    status: str = Field(..., description="Operation status: promoted, not_found, failed")
+    message: str = Field(..., description="Human-readable status message")
+    previous_position: Optional[int] = Field(default=None, description="Previous queue position")
+    new_position: Optional[int] = Field(default=None, description="New queue position")
+
+
+class QueueStrategyResponse(BaseModel):
+    previous_strategy: str = Field(..., description="Previous strategy")
+    current_strategy: str = Field(..., description="New strategy")
+    status: str = Field(..., description="Operation status: switching, completed, failed")
+    message: str = Field(..., description="Operation details")
+
+
+class QueueRatiosResponse(BaseModel):
+    previous_ratios: dict = Field(..., description="Previous ratio configuration")
+    current_ratios: dict = Field(..., description="New ratio configuration")
+    status: str = Field(..., description="Operation status: updated, failed")
+    message: str = Field(..., description="Operation details")
+
+
+class QueueTaskResponse(BaseModel):
+    task_id: str = Field(..., description="Task identifier")
+    status: str = Field(..., description="Operation status: removed, not_found, failed")
+    message: str = Field(..., description="Operation details")
+
+
 SUPPORTED_FORMATS = [
     SupportedFormat(extension=".pdf", mimetype="application/pdf", ocr_support=True),
     SupportedFormat(extension=".docx", mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document", ocr_support=True),

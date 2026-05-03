@@ -10,8 +10,9 @@ from typing import Callable, List, Optional
 
 from markitdown import MarkItDown, StreamInfo
 
-from .models import TaskStatus
-from .task_store import TaskStore, Task
+from .models import QueueStatsResponse, TaskStatus
+from .task_queue import FifoStrategy, QueueItem, TaskDispatchStrategy, TaskDispatchStrategyFactory
+from .task_store import TaskStore
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,8 @@ class TaskProcessor:
         enable_ocr: bool = False,
         progress_callback: Optional[Callable[[str, int, str], None]] = None,
         max_concurrent: int = 3,
+        dispatch_strategy: TaskDispatchStrategy = None,
+        scheduler_poll_interval: float = 0.1,
     ):
         self.task_store = task_store
         self.enable_ocr = enable_ocr
@@ -94,6 +97,16 @@ class TaskProcessor:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop_lock = threading.Lock()
         self._loop_thread: Optional[threading.Thread] = None
+        self._dispatch_strategy = dispatch_strategy or FifoStrategy()
+        self._scheduler_poll_interval = scheduler_poll_interval
+        self._scheduler_task: Optional[asyncio.Task] = None
+        self._scheduler_running = False
+        self._completed_count = 0
+        self._failed_count = 0
+        self._lock = threading.Lock()
+        self._active_tasks_cache: list[dict] = []
+        self._active_tasks_cache_time: float = 0
+        self._active_tasks_cache_ttl: float = 2.0
 
     def _create_ocr_markitdown(self) -> Optional[MarkItDown]:
         try:
@@ -131,13 +144,43 @@ class TaskProcessor:
         return self._loop
 
     def start_processing(self, task_id: str):
+        task = self.task_store.get_task(task_id)
+        if task is None:
+            logger.error(f"Task {task_id} not found in store")
+            return
+
         loop = self._ensure_loop()
 
-        def _create_and_track():
-            task = loop.create_task(self._process_task(task_id))
-            self._processing_tasks[task_id] = task
+        def _enqueue_task():
+            async def _async_enqueue():
+                result = await self._dispatch_strategy.enqueue(
+                    task_id, task.source_path, task.filename, task.options or {}
+                )
+                if not result.accepted:
+                    self.task_store.update_task(
+                        task_id,
+                        status=TaskStatus.FAILED,
+                        progress=-1,
+                        message="Queue full",
+                        error="Queue is full, try again later",
+                    )
+                    logger.warning(f"Task {task_id}: enqueue rejected - {result.message}")
 
-        loop.call_soon_threadsafe(_create_and_track)
+            loop.create_task(_async_enqueue())
+
+        loop.call_soon_threadsafe(_enqueue_task)
+
+        if not self._scheduler_running:
+            self._start_scheduler(loop)
+
+    def _start_scheduler(self, loop: asyncio.AbstractEventLoop):
+        def _start():
+            if not self._scheduler_running:
+                self._scheduler_running = True
+                self._scheduler_task = loop.create_task(self._scheduler_loop())
+                logger.info("Task scheduler started")
+
+        loop.call_soon_threadsafe(_start)
 
     async def _get_markitdown_for_task(self, task_id: str, enable_ocr: bool) -> MarkItDown:
         if not enable_ocr:
@@ -149,11 +192,16 @@ class TaskProcessor:
         logger.warning(f"Task {task_id}: OCR requested but unavailable, using default")
         return self._markitdown
 
-    async def _process_task(self, task_id: str):
+    async def _process_task(self, queue_item: QueueItem):
+        task_id = queue_item.task_id
         task = self.task_store.get_task(task_id)
         if task is None:
             logger.error(f"Task {task_id} not found")
             return
+        content = task.content if task.content else None
+        filename = queue_item.filename or task.filename
+        options = queue_item.options or task.options or {}
+        task_succeeded = False
         if task_id in self._cancelled_tasks:
             logger.info(f"Task {task_id} was cancelled before processing")
             return
@@ -161,9 +209,6 @@ class TaskProcessor:
         if self.progress_callback:
             await self.progress_callback(task_id, 0, "Starting conversion")
         try:
-            content = task.content
-            filename = task.filename
-            options = task.options or {}
             enable_ocr = options.get("enable_ocr", self.enable_ocr)
             page_range = options.get("page_range")
             silent = options.get("silent", False)
@@ -184,6 +229,7 @@ class TaskProcessor:
             else:
                 logger.info(f"Task {task_id}: using whole-file processing")
                 await self._process_whole_file(task_id, content, filename, md, silent)
+            task_succeeded = True
             logger.info(f"Task {task_id} completed successfully")
         except Exception as e:
             logger.error(f"Task {task_id} failed: {e}")
@@ -191,8 +237,13 @@ class TaskProcessor:
             if self.progress_callback:
                 await self.progress_callback(task_id, -1, f"Error: {str(e)}")
         finally:
-            self._processing_tasks.pop(task_id, None)
-            self._cancelled_tasks.discard(task_id)
+            with self._lock:
+                self._processing_tasks.pop(task_id, None)
+                self._cancelled_tasks.discard(task_id)
+                if task_succeeded:
+                    self._completed_count += 1
+                else:
+                    self._failed_count += 1
 
     async def _process_pdf_page_by_page(self, task_id: str, pdf_bytes: bytes, filename: str, page_range: Optional[str], md: MarkItDown, silent: bool):
         page_process_start = time.time()
@@ -283,6 +334,29 @@ class TaskProcessor:
         if self.progress_callback:
             await self.progress_callback(task_id, 100, "Conversion completed")
 
+    async def _scheduler_loop(self):
+        logger.info("Scheduler loop started")
+        try:
+            while self._scheduler_running:
+                active = len(self._processing_tasks)
+                if active < self.max_concurrent:
+                    queue_item = await self._dispatch_strategy.dequeue()
+                    if queue_item:
+                        task_id = queue_item.task_id
+                        task = self.task_store.get_task(task_id)
+                        if task and task_id not in self._cancelled_tasks:
+                            with self._lock:
+                                if task_id not in self._processing_tasks and task_id not in self._cancelled_tasks:
+                                    self._processing_tasks[task_id] = asyncio.create_task(
+                                        self._process_task(queue_item)
+                                    )
+                await asyncio.sleep(self._scheduler_poll_interval)
+        except asyncio.CancelledError:
+            logger.info("Scheduler loop cancelled")
+        finally:
+            self._scheduler_running = False
+            logger.info("Scheduler loop stopped")
+
     async def _report_progress(self, task_id: str, progress: int, message: str, silent: bool = False):
         self.task_store.update_task(task_id, progress=progress, message=message)
         if self.progress_callback and not silent:
@@ -300,6 +374,60 @@ class TaskProcessor:
     def get_active_count(self) -> int:
         return len(self._processing_tasks)
 
+    def get_queue_stats(self) -> QueueStatsResponse:
+        queue_stats = self._dispatch_strategy.get_stats()
+        with self._lock:
+            queue_stats["max_concurrent"] = self.max_concurrent
+            queue_stats["total_queued"] = self._get_total_queued()
+            queue_stats["total_processing"] = len(self._processing_tasks)
+            queue_stats["total_completed"] = self._completed_count
+            queue_stats["total_failed"] = self._failed_count
+            queue_stats["active_tasks"] = self._get_active_tasks_info()
+            queue_stats["fifo_queue"] = queue_stats.pop("fifo", None)
+            queue_stats["small_queue"] = queue_stats.pop("small_queue", None)
+            queue_stats["large_queue"] = queue_stats.pop("large_queue", None)
+            queue_stats["ratio_config"] = queue_stats.pop("ratio", None)
+        return QueueStatsResponse(**queue_stats)
+
+    def _get_total_queued(self) -> int:
+        stats = self._dispatch_strategy.get_stats()
+        if self._dispatch_strategy.strategy_name == "fifo":
+            return stats.get("fifo", {}).get("pending", 0)
+        else:
+            small = stats.get("small_queue", {}).get("pending", 0)
+            large = stats.get("large_queue", {}).get("pending", 0)
+            return small + large
+
+    def _get_active_tasks_info(self) -> list[dict]:
+        import time as _time
+        now = _time.time()
+        if self._processing_tasks and (now - self._active_tasks_cache_time > self._active_tasks_cache_ttl):
+            info_list = []
+            for task_id, task in self._processing_tasks.items():
+                task_data = self.task_store.get_task(task_id)
+                if task_data:
+                    info_list.append({
+                        "task_id": task_id,
+                        "filename": task_data.filename,
+                        "status": "processing",
+                        "progress": task_data.progress,
+                        "started_at": task_data.updated_at.isoformat() if hasattr(task_data, 'updated_at') else None,
+                        "duration_seconds": 0,
+                    })
+            self._active_tasks_cache = info_list
+            self._active_tasks_cache_time = now
+        return self._active_tasks_cache
+
+    async def promote_task(self, task_id: str) -> dict:
+        return await self._dispatch_strategy.promote_task(task_id)
+
+    async def remove_task_from_queue(self, task_id: str) -> bool:
+        return await self._dispatch_strategy.remove_task(task_id)
+
+    def set_dispatch_strategy(self, strategy: TaskDispatchStrategy):
+        logger.info(f"Switching dispatch strategy from {self._dispatch_strategy.strategy_name} to {strategy.strategy_name}")
+        self._dispatch_strategy = strategy
+
 
 _task_processor: Optional[TaskProcessor] = None
 
@@ -307,8 +435,8 @@ _task_processor: Optional[TaskProcessor] = None
 def get_task_processor() -> TaskProcessor:
     global _task_processor
     if _task_processor is None:
-        from .task_store import get_task_store
         from .sse_notifications import get_notification_service
+        from .task_store import get_task_store
         task_store = get_task_store()
         notification_service = get_notification_service()
         async def progress_callback(task_id: str, progress: int, message: str):
@@ -320,9 +448,24 @@ def get_task_processor() -> TaskProcessor:
                 await notification_service.notify_completed(task_id)
             elif progress < 0:
                 await notification_service.notify_failed(task_id, message)
+
+        strategy_type = os.getenv("MARKITDOWN_DISPATCH_STRATEGY", "fifo").lower()
+        strategy_params = {
+            "max_queue_size": int(os.getenv("MARKITDOWN_MAX_QUEUE_SIZE", "100")),
+            "queue_timeout": float(os.getenv("MARKITDOWN_QUEUE_TIMEOUT", "5.0")),
+        }
+        if strategy_type == "ratio":
+            strategy_params["small_ratio"] = float(os.getenv("MARKITDOWN_SMALL_RATIO", "0.4"))
+            strategy_params["large_ratio"] = float(os.getenv("MARKITDOWN_LARGE_RATIO", "0.6"))
+            threshold_mb = int(os.getenv("MARKITDOWN_FILE_THRESHOLD_MB", "5"))
+            strategy_params["file_threshold_bytes"] = threshold_mb * 1024 * 1024
+
+        dispatch_strategy = TaskDispatchStrategyFactory.create(strategy_type, **strategy_params)
+
         _task_processor = TaskProcessor(
             task_store=task_store,
             enable_ocr=os.getenv("MARKITDOWN_OCR_ENABLED", "false").lower() == "true",
             progress_callback=progress_callback,
+            dispatch_strategy=dispatch_strategy,
         )
     return _task_processor
